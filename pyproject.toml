@@ -41,6 +41,7 @@ classifiers = [
 test = [
     "numpy",
     "pytest>=8",
+    "setuptools>=77",
 ]
 dev = [
     "build>=1",
