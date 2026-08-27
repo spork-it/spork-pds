@@ -577,6 +577,7 @@ typedef struct Vector {
     Py_hash_t hash;
     int hash_computed;
     PyObject *transient_id;
+    int initialized;
 } Vector;
 
 static PyTypeObject VectorType;
@@ -600,6 +601,7 @@ static PyObject *Vector_new(PyTypeObject *type, PyObject *args, PyObject *kwds) 
         self->hash = 0;
         self->hash_computed = 0;
         self->transient_id = NULL;
+        self->initialized = 0;
     }
     return (PyObject *)self;
 }
@@ -623,6 +625,7 @@ static Vector *Vector_create(Py_ssize_t cnt, int shift, VectorNode *root,
     vec->hash_computed = 0;
     vec->transient_id = transient_id;
     Py_XINCREF(transient_id);
+    vec->initialized = 1;
 
     return vec;
 }
@@ -1055,15 +1058,26 @@ static PyObject *Vector_transient(Vector *self, PyObject *Py_UNUSED(ignored));
 static PyObject *TransientVector_conj_mut(TransientVector *self, PyObject *val);
 static PyObject *TransientVector_persistent(TransientVector *self, PyObject *Py_UNUSED(ignored));
 
-static PyObject *Vector_add(Vector *self, PyObject *other) {
-    // Try to get an iterator - this handles any iterable including Vector
-    PyObject *iter = PyObject_GetIter(other);
-    if (!iter) {
-        PyErr_Clear();
+static PyObject *Vector_add(PyObject *left, PyObject *right) {
+    // nb_add can be called for reflected operations. Validate the left operand
+    // before treating it as a Vector; iterable + Vector is intentionally not
+    // supported.
+    if (!PyObject_TypeCheck(left, &VectorType)) {
         Py_RETURN_NOTIMPLEMENTED;
     }
+    Vector *self = (Vector *)left;
 
-    // Create transient directly via C function call (no Python method lookup)
+    // Try to get an iterator - this handles any iterable including Vector.
+    PyObject *iter = PyObject_GetIter(right);
+    if (!iter) {
+        if (PyErr_ExceptionMatches(PyExc_TypeError)) {
+            PyErr_Clear();
+            Py_RETURN_NOTIMPLEMENTED;
+        }
+        return NULL;
+    }
+
+    // Create transient directly via C function call (no Python method lookup).
     TransientVector *t = (TransientVector *)Vector_transient(self, NULL);
     if (!t) {
         Py_DECREF(iter);
@@ -1072,8 +1086,6 @@ static PyObject *Vector_add(Vector *self, PyObject *other) {
 
     PyObject *item;
     while ((item = PyIter_Next(iter)) != NULL) {
-        // OPTIMIZATION: Call internal C function directly
-        // No Python method lookup, no argument tuple packing
         PyObject *res = TransientVector_conj_mut(t, item);
         Py_DECREF(item);
         if (!res) {
@@ -1081,7 +1093,7 @@ static PyObject *Vector_add(Vector *self, PyObject *other) {
             Py_DECREF(t);
             return NULL;
         }
-        Py_DECREF(res); // discard result, t is mutated in place
+        Py_DECREF(res);
     }
     Py_DECREF(iter);
 
@@ -1090,7 +1102,84 @@ static PyObject *Vector_add(Vector *self, PyObject *other) {
         return NULL;
     }
 
-    // Make persistent via direct C call
+    PyObject *result = TransientVector_persistent(t, NULL);
+    Py_DECREF(t);
+    return result;
+}
+
+static PyObject *Vector_multiply(PyObject *left, PyObject *right) {
+    Vector *self;
+    PyObject *count_obj;
+
+    // Multiplication is commutative for repetition: support both v * n and
+    // n * v while still validating reflected slot calls safely.
+    if (PyObject_TypeCheck(left, &VectorType)) {
+        self = (Vector *)left;
+        count_obj = right;
+    } else if (PyObject_TypeCheck(right, &VectorType)) {
+        self = (Vector *)right;
+        count_obj = left;
+    } else {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+
+    PyObject *index = PyNumber_Index(count_obj);
+    if (!index) {
+        if (PyErr_ExceptionMatches(PyExc_TypeError)) {
+            PyErr_Clear();
+            Py_RETURN_NOTIMPLEMENTED;
+        }
+        return NULL;
+    }
+
+    Py_ssize_t count = PyLong_AsSsize_t(index);
+    Py_DECREF(index);
+    if (count == -1 && PyErr_Occurred()) {
+        return NULL;
+    }
+
+    if (count <= 0 || self->cnt == 0) {
+        Py_INCREF(EMPTY_VECTOR);
+        return (PyObject *)EMPTY_VECTOR;
+    }
+    if (count == 1) {
+        Py_INCREF(self);
+        return (PyObject *)self;
+    }
+    if (self->cnt > PY_SSIZE_T_MAX / count) {
+        PyErr_SetString(PyExc_OverflowError, "repeated Vector is too long");
+        return NULL;
+    }
+
+    TransientVector *t = (TransientVector *)Vector_transient(EMPTY_VECTOR, NULL);
+    if (!t) return NULL;
+
+    for (Py_ssize_t repetition = 0; repetition < count; repetition++) {
+        PyObject *iter = PyObject_GetIter((PyObject *)self);
+        if (!iter) {
+            Py_DECREF(t);
+            return NULL;
+        }
+
+        PyObject *item;
+        while ((item = PyIter_Next(iter)) != NULL) {
+            PyObject *res = TransientVector_conj_mut(t, item);
+            Py_DECREF(item);
+            if (!res) {
+                Py_DECREF(iter);
+                Py_DECREF(t);
+                return NULL;
+            }
+            Py_DECREF(res);
+        }
+        Py_DECREF(iter);
+
+        if (PyErr_Occurred()) {
+            Py_DECREF(t);
+            return NULL;
+        }
+    }
+
     PyObject *result = TransientVector_persistent(t, NULL);
     Py_DECREF(t);
     return result;
@@ -1367,13 +1456,15 @@ static PyObject *Vector_count(Vector *self, PyObject *value) {
 }
 
 static PyObject *Vector_reduce(Vector *self, PyObject *Py_UNUSED(ignored)) {
-    // Convert Vector to a tuple using the sequence protocol
-    PyObject *args = PySequence_Tuple((PyObject *)self);
-    if (args == NULL) {
-        return NULL;
-    }
+    // Vector accepts one iterable constructor argument, so wrap the elements
+    // tuple in the argument tuple used by pickle.
+    PyObject *elements = PySequence_Tuple((PyObject *)self);
+    if (!elements) return NULL;
 
-    // Return (type, args_tuple) - pickle will call type(*args_tuple)
+    PyObject *args = PyTuple_Pack(1, elements);
+    Py_DECREF(elements);
+    if (!args) return NULL;
+
     PyObject *result = PyTuple_Pack(2, (PyObject *)Py_TYPE(self), args);
     Py_DECREF(args);
     return result;
@@ -1426,7 +1517,8 @@ static PySequenceMethods Vector_as_sequence = {
 };
 
 static PyNumberMethods Vector_as_number = {
-    .nb_add = (binaryfunc)Vector_add,
+    .nb_add = Vector_add,
+    .nb_multiply = Vector_multiply,
 };
 
 // Vector iterator
@@ -1498,61 +1590,41 @@ static PyObject *Vector_iter(Vector *self) {
 }
 
 static int Vector_init(Vector *self, PyObject *args, PyObject *kwds) {
-    Py_ssize_t n = PyTuple_Size(args);
-
-    if (n == 0) {
-        return 0;  // Empty vector already set up in __new__
+    if (self->initialized) {
+        PyErr_SetString(PyExc_TypeError, "Vector values cannot be reinitialized");
+        return -1;
     }
 
-    // Check if single argument that's an iterable (but not a string)
-    if (n == 1) {
-        PyObject *arg = PyTuple_GET_ITEM(args, 0);
-        // If it's a string, treat it as a single element, not an iterable
-        if (!PyUnicode_Check(arg) && !PyBytes_Check(arg)) {
-            // Try to iterate over it
-            PyObject *iter = PyObject_GetIter(arg);
-            if (iter != NULL) {
-                // It's iterable - use its elements
-                PyObject *item;
-                while ((item = PyIter_Next(iter)) != NULL) {
-                    PyObject *new_vec = Vector_conj(self, item);
-                    Py_DECREF(item);
-                    if (!new_vec) {
-                        Py_DECREF(iter);
-                        return -1;
-                    }
-
-                    // Update self from new_vec
-                    Vector *nv = (Vector *)new_vec;
-                    Py_DECREF(self->root);
-                    Py_DECREF(self->tail);
-                    self->cnt = nv->cnt;
-                    self->shift = nv->shift;
-                    self->root = nv->root;
-                    Py_INCREF(self->root);
-                    self->tail = nv->tail;
-                    Py_INCREF(self->tail);
-                    Py_DECREF(new_vec);
-                }
-                Py_DECREF(iter);
-
-                if (PyErr_Occurred()) return -1;
-                return 0;
-            }
-            // Not iterable - clear error and treat as single element
-            PyErr_Clear();
-        }
+    Py_ssize_t nargs = PyTuple_GET_SIZE(args);
+    if (kwds && PyDict_GET_SIZE(kwds) > 0) {
+        PyErr_SetString(PyExc_TypeError, "Vector takes no keyword arguments");
+        return -1;
+    }
+    if (nargs > 1) {
+        PyErr_Format(
+            PyExc_TypeError,
+            "Vector expected at most 1 argument, got %zd",
+            nargs
+        );
+        return -1;
+    }
+    if (nargs == 0) {
+        self->initialized = 1;
+        return 0;
     }
 
-    // Multiple arguments or single non-iterable: treat as varargs
-    for (Py_ssize_t i = 0; i < n; i++) {
-        PyObject *item = PyTuple_GET_ITEM(args, i);
+    PyObject *iter = PyObject_GetIter(PyTuple_GET_ITEM(args, 0));
+    if (!iter) return -1;
+
+    PyObject *item;
+    while ((item = PyIter_Next(iter)) != NULL) {
         PyObject *new_vec = Vector_conj(self, item);
+        Py_DECREF(item);
         if (!new_vec) {
+            Py_DECREF(iter);
             return -1;
         }
 
-        // Update self from new_vec
         Vector *nv = (Vector *)new_vec;
         Py_DECREF(self->root);
         Py_DECREF(self->tail);
@@ -1564,14 +1636,17 @@ static int Vector_init(Vector *self, PyObject *args, PyObject *kwds) {
         Py_INCREF(self->tail);
         Py_DECREF(new_vec);
     }
+    Py_DECREF(iter);
 
+    if (PyErr_Occurred()) return -1;
+    self->initialized = 1;
     return 0;
 }
 
 static PyTypeObject VectorType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "spork_pds.Vector",
-    .tp_doc = "Persistent Vector using a bit-partitioned trie",
+    .tp_doc = "Vector(iterable=()) -> persistent vector using a bit-partitioned trie",
     .tp_basicsize = sizeof(Vector),
     .tp_itemsize = 0,
     .tp_dealloc = (destructor)Vector_dealloc,
@@ -5534,6 +5609,7 @@ typedef struct Map {
     Py_hash_t hash;
     int hash_computed;
     PyObject *transient_id;
+    int initialized;
 } Map;
 
 static PyTypeObject MapType;
@@ -5553,6 +5629,7 @@ static PyObject *Map_new(PyTypeObject *type, PyObject *args, PyObject *kwds) {
         self->hash = 0;
         self->hash_computed = 0;
         self->transient_id = NULL;
+        self->initialized = 0;
     }
     return (PyObject *)self;
 }
@@ -5568,6 +5645,7 @@ static Map *Map_create(Py_ssize_t cnt, PyObject *root, PyObject *transient_id) {
     m->hash_computed = 0;
     m->transient_id = transient_id;
     Py_XINCREF(transient_id);
+    m->initialized = 1;
 
     return m;
 }
@@ -6059,7 +6137,27 @@ static PyObject *Map_to_seq(Map *self, PyObject *Py_UNUSED(ignored)) {
 // Map merge operation (|)
 static PyObject *Map_or(PyObject *left, PyObject *right) {
     if (!PyObject_TypeCheck(left, &MapType)) {
-        Py_RETURN_NOTIMPLEMENTED;
+        // Reflected merge: Mapping | Map. Build a persistent map from the
+        // left mapping first, then apply the right map so right-hand values
+        // retain normal dict-union precedence.
+        if (!PyObject_TypeCheck(right, &MapType)) {
+            Py_RETURN_NOTIMPLEMENTED;
+        }
+
+        int has_items = PyDict_Check(left) ? 1 : PyObject_HasAttrString(left, "items");
+        if (has_items < 0) return NULL;
+        if (!has_items) Py_RETURN_NOTIMPLEMENTED;
+
+        PyObject *base = Map_or((PyObject *)EMPTY_MAP, left);
+        if (!base) return NULL;
+        if (base == Py_NotImplemented) {
+            Py_DECREF(base);
+            Py_RETURN_NOTIMPLEMENTED;
+        }
+
+        PyObject *result = Map_or(base, right);
+        Py_DECREF(base);
+        return result;
     }
     Map *self = (Map *)left;
 
@@ -6094,8 +6192,18 @@ static PyObject *Map_or(PyObject *left, PyObject *right) {
             Py_DECREF(items_iter);
             items_iter = temp;
         }
-    } else if (PyObject_HasAttrString(right, "items")) {
-        // Generic mapping with .items() method (but not lists, etc.)
+    } else {
+        // Dict-style union accepts mappings, not arbitrary iterables of pairs.
+        int has_items = PyObject_HasAttrString(right, "items");
+        if (has_items < 0) {
+            Py_DECREF(t);
+            return NULL;
+        }
+        if (!has_items) {
+            Py_DECREF(t);
+            Py_RETURN_NOTIMPLEMENTED;
+        }
+
         PyObject *items_method = PyObject_GetAttrString(right, "items");
         if (!items_method) {
             Py_DECREF(t);
@@ -6108,9 +6216,6 @@ static PyObject *Map_or(PyObject *left, PyObject *right) {
             Py_DECREF(items_iter);
             items_iter = temp;
         }
-    } else {
-        // Fallback: assume iterable of pairs (e.g., list of tuples)
-        items_iter = PyObject_GetIter(right);
     }
 
     if (!items_iter) {
@@ -6219,8 +6324,78 @@ static PyObject *Map_or(PyObject *left, PyObject *right) {
     return result;
 }
 
+static int Map_replace_contents(Map *self, PyObject *source) {
+    PyObject *merged = Map_or((PyObject *)self, source);
+    if (!merged) return -1;
+    if (merged == Py_NotImplemented) {
+        Py_DECREF(merged);
+        PyErr_SetString(
+            PyExc_TypeError,
+            "Map argument must be a mapping or an iterable of (key, value) pairs"
+        );
+        return -1;
+    }
+
+    Map *new_map = (Map *)merged;
+    PyObject *new_root = new_map->root;
+    PyObject *new_transient_id = new_map->transient_id;
+    Py_XINCREF(new_root);
+    Py_XINCREF(new_transient_id);
+
+    Py_XDECREF(self->root);
+    Py_XDECREF(self->transient_id);
+    self->cnt = new_map->cnt;
+    self->root = new_root;
+    self->hash = new_map->hash;
+    self->hash_computed = new_map->hash_computed;
+    self->transient_id = new_transient_id;
+
+    Py_DECREF(merged);
+    return 0;
+}
+
+static int Map_init(Map *self, PyObject *args, PyObject *kwds) {
+    if (self->initialized) {
+        PyErr_SetString(PyExc_TypeError, "Map values cannot be reinitialized");
+        return -1;
+    }
+
+    Py_ssize_t nargs = PyTuple_GET_SIZE(args);
+    if (nargs > 1) {
+        PyErr_Format(
+            PyExc_TypeError,
+            "Map expected at most 1 argument, got %zd",
+            nargs
+        );
+        return -1;
+    }
+
+    if (nargs == 1) {
+        // Normalize through dict so construction accepts either a mapping or
+        // an iterable of pairs while the | operator remains mapping-only.
+        PyObject *source = PyTuple_GET_ITEM(args, 0);
+        PyObject *mapping = PyObject_CallFunctionObjArgs(
+            (PyObject *)&PyDict_Type,
+            source,
+            NULL
+        );
+        if (!mapping) return -1;
+
+        int status = Map_replace_contents(self, mapping);
+        Py_DECREF(mapping);
+        if (status < 0) return -1;
+    }
+
+    if (kwds && PyDict_GET_SIZE(kwds) > 0 && Map_replace_contents(self, kwds) < 0) {
+        return -1;
+    }
+
+    self->initialized = 1;
+    return 0;
+}
+
 static PyNumberMethods Map_as_number = {
-    .nb_or = (binaryfunc)Map_or,
+    .nb_or = Map_or,
 };
 
 /* Map.copy() - returns self since Map is immutable */
@@ -6314,7 +6489,7 @@ static PyMappingMethods Map_as_mapping = {
 static PyTypeObject MapType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "spork_pds.Map",
-    .tp_doc = "Persistent Hash Map using HAMT",
+    .tp_doc = "Map(mapping_or_pairs=(), **kwargs) -> persistent hash map using a HAMT",
     .tp_basicsize = sizeof(Map),
     .tp_itemsize = 0,
     .tp_dealloc = (destructor)Map_dealloc,
@@ -6327,6 +6502,7 @@ static PyTypeObject MapType = {
     .tp_richcompare = (richcmpfunc)Map_richcompare,
     .tp_iter = (getiterfunc)Map_iter,
     .tp_methods = Map_methods,
+    .tp_init = (initproc)Map_init,
     .tp_new = Map_new,
 };
 
@@ -6739,6 +6915,7 @@ struct Set {
     Py_hash_t hash;
     int hash_computed;
     PyObject *transient_id;
+    int initialized;
 };
 
 static PyTypeObject SetType;
@@ -6758,6 +6935,7 @@ static PyObject *Set_new(PyTypeObject *type, PyObject *args, PyObject *kwds) {
         self->hash = 0;
         self->hash_computed = 0;
         self->transient_id = NULL;
+        self->initialized = 0;
     }
     return (PyObject *)self;
 }
@@ -6766,31 +6944,57 @@ static PyObject *Set_new(PyTypeObject *type, PyObject *args, PyObject *kwds) {
 static PyObject *Set_conj(Set *self, PyObject *val);
 
 static int Set_init(Set *self, PyObject *args, PyObject *kwds) {
-    Py_ssize_t n = PyTuple_Size(args);
-
-    if (n == 0) {
-        return 0;  // Empty set, already initialized by tp_new
+    if (self->initialized) {
+        PyErr_SetString(PyExc_TypeError, "Set values cannot be reinitialized");
+        return -1;
     }
 
-    // Build set by conj'ing each element
-    for (Py_ssize_t i = 0; i < n; i++) {
-        PyObject *item = PyTuple_GET_ITEM(args, i);
+    Py_ssize_t nargs = PyTuple_GET_SIZE(args);
+
+    if (kwds && PyDict_GET_SIZE(kwds) > 0) {
+        PyErr_SetString(PyExc_TypeError, "Set takes no keyword arguments");
+        return -1;
+    }
+    if (nargs > 1) {
+        PyErr_Format(
+            PyExc_TypeError,
+            "Set expected at most 1 argument, got %zd",
+            nargs
+        );
+        return -1;
+    }
+    if (nargs == 0) {
+        self->initialized = 1;
+        return 0;
+    }
+
+    PyObject *iter = PyObject_GetIter(PyTuple_GET_ITEM(args, 0));
+    if (!iter) return -1;
+
+    PyObject *item;
+    while ((item = PyIter_Next(iter)) != NULL) {
         PyObject *new_set = Set_conj(self, item);
+        Py_DECREF(item);
         if (!new_set) {
+            Py_DECREF(iter);
             return -1;
         }
 
-        // Update self from new_set
+        // Update self from new_set while retaining its structurally shared root.
         Set *ns = (Set *)new_set;
+        PyObject *new_root = ns->root;
+        Py_XINCREF(new_root);
         Py_XDECREF(self->root);
         self->cnt = ns->cnt;
-        self->root = ns->root;
-        Py_XINCREF(self->root);
+        self->root = new_root;
         self->hash = 0;
         self->hash_computed = 0;
         Py_DECREF(new_set);
     }
+    Py_DECREF(iter);
 
+    if (PyErr_Occurred()) return -1;
+    self->initialized = 1;
     return 0;
 }
 
@@ -6805,6 +7009,7 @@ static Set *Set_create(Py_ssize_t cnt, PyObject *root, PyObject *transient_id) {
     s->hash_computed = 0;
     s->transient_id = transient_id;
     Py_XINCREF(transient_id);
+    s->initialized = 1;
 
     return s;
 }
@@ -6984,10 +7189,17 @@ static PyObject *TransientSet_persistent(TransientSet *self, PyObject *Py_UNUSED
 
 static PyObject *Set_or(PyObject *left, PyObject *right) {
     if (!PyObject_TypeCheck(left, &SetType)) {
-        Py_RETURN_NOTIMPLEMENTED;
+        // Reflected union is supported for built-in set and frozenset values.
+        if (!PyObject_TypeCheck(right, &SetType) || !PyAnySet_Check(left)) {
+            Py_RETURN_NOTIMPLEMENTED;
+        }
+        return Set_or(right, left);
     }
 
     Set *self = (Set *)left;
+    if (!PyObject_TypeCheck(right, &SetType) && !PyAnySet_Check(right)) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
 
     // If other is also a Set, iterate directly
     if (PyObject_TypeCheck(right, &SetType)) {
@@ -7079,10 +7291,18 @@ static PyObject *Set_or(PyObject *left, PyObject *right) {
 
 static PyObject *Set_and(PyObject *left, PyObject *right) {
     if (!PyObject_TypeCheck(left, &SetType)) {
-        Py_RETURN_NOTIMPLEMENTED;
+        // Intersection is commutative, so reflected operations can use the
+        // persistent set as the implementation receiver.
+        if (!PyObject_TypeCheck(right, &SetType) || !PyAnySet_Check(left)) {
+            Py_RETURN_NOTIMPLEMENTED;
+        }
+        return Set_and(right, left);
     }
 
     Set *self = (Set *)left;
+    if (!PyObject_TypeCheck(right, &SetType) && !PyAnySet_Check(right)) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
 
     if (self->cnt == 0) {
         Py_INCREF(EMPTY_SET);
@@ -7184,10 +7404,23 @@ static PyObject *Set_and(PyObject *left, PyObject *right) {
 
 static PyObject *Set_sub(PyObject *left, PyObject *right) {
     if (!PyObject_TypeCheck(left, &SetType)) {
-        Py_RETURN_NOTIMPLEMENTED;
+        // Difference is not commutative. Preserve operand order by first
+        // converting a reflected built-in set to a persistent Set.
+        if (!PyObject_TypeCheck(right, &SetType) || !PyAnySet_Check(left)) {
+            Py_RETURN_NOTIMPLEMENTED;
+        }
+
+        PyObject *base = Set_or((PyObject *)EMPTY_SET, left);
+        if (!base) return NULL;
+        PyObject *result = Set_sub(base, right);
+        Py_DECREF(base);
+        return result;
     }
 
     Set *self = (Set *)left;
+    if (!PyObject_TypeCheck(right, &SetType) && !PyAnySet_Check(right)) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
 
     if (self->cnt == 0) {
         Py_INCREF(self);
@@ -7243,10 +7476,16 @@ static PyObject *Set_xor(PyObject *left, PyObject *right) {
     // Symmetric difference: (self | other) - (self & other)
     // or equivalently: (self - other) | (other - self)
     if (!PyObject_TypeCheck(left, &SetType)) {
-        Py_RETURN_NOTIMPLEMENTED;
+        if (!PyObject_TypeCheck(right, &SetType) || !PyAnySet_Check(left)) {
+            Py_RETURN_NOTIMPLEMENTED;
+        }
+        return Set_xor(right, left);
     }
 
     Set *self = (Set *)left;
+    if (!PyObject_TypeCheck(right, &SetType) && !PyAnySet_Check(right)) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
 
     // Use transient for efficient accumulation from empty set
     TransientSet *trans = (TransientSet *)Set_transient(EMPTY_SET, NULL);
@@ -7702,13 +7941,15 @@ static PyObject *Set_isdisjoint(Set *self, PyObject *other) {
 }
 
 static PyObject *Set_reduce(Set *self, PyObject *Py_UNUSED(ignored)) {
-    // Convert Set to a tuple using the sequence protocol (iteration)
-    PyObject *args = PySequence_Tuple((PyObject *)self);
-    if (args == NULL) {
-        return NULL;
-    }
+    // Set accepts one iterable constructor argument, so wrap the elements
+    // tuple in the argument tuple used by pickle.
+    PyObject *elements = PySequence_Tuple((PyObject *)self);
+    if (!elements) return NULL;
 
-    // Return (type, args_tuple) - pickle will call type(*args_tuple)
+    PyObject *args = PyTuple_Pack(1, elements);
+    Py_DECREF(elements);
+    if (!args) return NULL;
+
     PyObject *result = PyTuple_Pack(2, (PyObject *)Py_TYPE(self), args);
     Py_DECREF(args);
     return result;
@@ -7742,7 +7983,7 @@ static PyNumberMethods Set_as_number = {
 static PyTypeObject SetType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "spork_pds.Set",
-    .tp_doc = "Persistent Hash Set using HAMT",
+    .tp_doc = "Set(iterable=()) -> persistent hash set using a HAMT",
     .tp_basicsize = sizeof(Set),
     .tp_itemsize = 0,
     .tp_dealloc = (destructor)Set_dealloc,

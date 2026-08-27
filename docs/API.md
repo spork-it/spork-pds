@@ -41,7 +41,7 @@ Transient types:
 - `TransientSet`
 - `TransientSortedVector`
 
-Prefer the factory functions and `.transient()` over constructing transient classes directly.
+Persistent `Vector`, `Map`, and `Set` values can be constructed directly from Python iterables or mappings. Prefer `.transient()` over constructing transient classes directly. The factory functions remain available for compatibility and specialized construction.
 
 ### Empty values
 
@@ -54,15 +54,44 @@ Prefer the factory functions and `.transient()` over constructing transient clas
 
 The `vec`, `vec_f64`, `vec_i64`, `hash_map`, and `hash_set` empty factories return their shared empty values. `sorted_vec()` creates an equivalent empty sorted vector. Empty values are immutable and safe to reuse.
 
-## `Vector`
+## Persistent operators
 
-A general-purpose persistent sequence.
+The primary collection operators follow Python's built-in collection vocabulary:
+
+| Expression | Result |
+| --- | --- |
+| `vector + iterable` | Concatenated `Vector` |
+| `vector * count`, `count * vector` | Repeated `Vector` |
+| `map_value | mapping` | Merged `Map`; right-hand values win |
+| `mapping | map_value` | Merged `Map`; right-hand values win |
+| `set_value | other` | Union as a `Set` |
+| `set_value & other` | Intersection as a `Set` |
+| `set_value - other` | Difference as a `Set` |
+| `set_value ^ other` | Symmetric difference as a `Set` |
+
+Built-in `set` and `frozenset` values are also supported on the left of set operators; the result is still a persistent `Set`. Iterable-left vector concatenation is intentionally unsupported, so `[1] + vector` raises `TypeError`.
+
+No in-place number slots are defined. Augmented assignment therefore computes a persistent result and rebinds the target name:
 
 ```python
-from spork_pds import vec
+original = Map({"count": 1})
+updated = original
+updated |= {"count": 2}
 
-original = vec(10, 20, 30)
-appended = original.conj(40)
+assert original["count"] == 1
+assert updated["count"] == 2
+```
+
+## `Vector`
+
+A general-purpose persistent sequence. `Vector()` accepts at most one iterable; use `vec(*values)` when variadic element construction is convenient.
+
+```python
+from spork_pds import Vector
+
+original = Vector([10, 20, 30])
+appended = original + [40]
+repeated = original * 2
 updated = original.assoc(1, 99)
 shorter = appended.pop()
 slice_value = appended[1:3]
@@ -81,7 +110,7 @@ Methods:
 - `count(value)`: count matching values.
 - `sort(*, key=None, reverse=False)`: return a sorted `Vector`.
 
-Python support includes `len`, iteration, integer indexing, negative indexing, slicing, `+`, equality, hashing, `collections.abc.Sequence`, generic aliases such as `Vector[int]`, and pickle.
+Python support includes `len`, iteration, `reversed`, membership, integer indexing, negative indexing, slicing, `+` concatenation, `*` repetition, equality, hashing, `collections.abc.Sequence`, generic aliases such as `Vector[int]`, and pickle. Concatenation accepts any iterable on the right. Repetition accepts an integer-like count; non-positive counts produce the empty vector.
 
 ### `TransientVector`
 
@@ -138,16 +167,18 @@ A first buffer request flattens the trie into cached contiguous storage. Further
 A persistent hash map.
 
 ```python
-from spork_pds import hash_map
+from spork_pds import Map
 
-original = hash_map("a", 1, "b", 2)
-updated = original.assoc("b", 20).assoc("c", 3)
+original = Map({"a": 1, "b": 2})
+updated = original | {"b": 20, "c": 3}
 removed = updated.dissoc("a")
 
 assert original["b"] == 2
 assert updated["b"] == 20
 assert dict(removed.items()) == {"b": 20, "c": 3}
 ```
+
+`Map()` accepts at most one mapping or iterable of key/value pairs, followed by optional keyword entries. `Map | Mapping` and `Mapping | Map` use dict-union precedence: values from the right operand win, and the result is always a persistent `Map`.
 
 Methods:
 
@@ -185,10 +216,10 @@ result = transient.persistent()
 A persistent hash set.
 
 ```python
-from spork_pds import hash_set
+from spork_pds import Set
 
-left = hash_set([1, 2, 3])
-right = hash_set([3, 4])
+left = Set([1, 2, 3])
+right = Set([3, 4])
 
 assert set(left | right) == {1, 2, 3, 4}
 assert set(left & right) == {3}
@@ -205,7 +236,7 @@ Methods:
 - `copy()`: return the same immutable object.
 - `isdisjoint(other)`
 
-Sets support `len`, iteration, membership, equality and ordering comparisons, hashing, standard binary set operators, `collections.abc.Set`, generic aliases such as `Set[int]`, and pickle.
+`Set()` accepts at most one iterable. Sets support `len`, iteration, membership, equality and ordering comparisons, hashing, standard binary set operators, reflected operations with built-in sets and frozensets, `collections.abc.Set`, generic aliases such as `Set[int]`, and pickle. Binary operators always return a persistent `Set`.
 
 ### `TransientSet`
 

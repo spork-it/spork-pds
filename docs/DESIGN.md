@@ -45,6 +45,8 @@ Expected lookup, insertion, and deletion are effectively O(log32 n), subject to 
 | Persistent add | amortized O(1) | expected O(log n) | expected O(log n) | O(log n) |
 | Persistent update | O(log n) | expected O(log n) | — | — |
 | Persistent removal | amortized O(1) from end | expected O(log n) | expected O(log n) | O(log n) |
+| Binary combination | O(m) concatenation | expected O(m log n) merge | expected O(n + m) set operation | — |
+| Repetition by `k` | O(nk) | — | — | — |
 | Full iteration | O(n) | O(n) | O(n) | O(n) |
 | Typed-vector first buffer request | O(n) | — | — | — |
 | Typed-vector later buffer request | O(1) | — | — | — |
@@ -66,6 +68,8 @@ The extension registers persistent collections with `collections.abc`:
 - sets as `Set`.
 
 General transients register with their corresponding mutable ABCs. The types also participate directly in Python's iteration, hashing, comparison, indexing, mapping, set-operation, pickle, generic-alias, and buffer protocols as applicable.
+
+Persistent binary operators use transients internally to build one result efficiently. They do not mutate either operand. Because no in-place number slots are installed, augmented assignments such as `map_value |= updates` and `vector += values` use Python's normal immutable fallback: compute the binary operation, then rebind the target.
 
 On free-threaded CPython 3.13+, the extension declares that it does not require the GIL. Shared persistent values are immutable; mutable transient values still require application-level single-owner discipline.
 

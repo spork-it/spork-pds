@@ -3,7 +3,7 @@
 [![Tests](https://github.com/spork-it/spork-pds/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/spork-it/spork-pds/actions/workflows/test.yml)
 ![PyPI - Version](https://img.shields.io/pypi/v/spork-pds)
 
-`spork-pds` provides fast, immutable persistent data structures for CPython. Updates return new values while sharing unchanged structure with the original, making snapshots inexpensive and preserving predictable value semantics.
+`spork-pds` provides fast, immutable persistent data structures for CPython. They use familiar collection operators, but return new values while sharing unchanged structure with the original. Snapshots stay inexpensive and previous values remain unchanged.
 
 The package is the standalone home of the persistent data structures originally developed for [Spork](https://github.com/spork-it/spork-lang). It has no dependency on the Spork language or runtime.
 
@@ -11,9 +11,9 @@ The package is the standalone home of the persistent data structures originally 
 
 ## Features
 
-- `Vector`: bit-partitioned persistent vector with indexing, slicing, append, update, and pop
-- `Map`: persistent hash map backed by a HAMT
-- `Set`: persistent hash set with standard set operations
+- `Vector`: bit-partitioned persistent vector with indexing, slicing, `+` concatenation, and `*` repetition
+- `Map`: persistent hash map backed by a HAMT with dict-style `|` merging
+- `Set`: persistent hash set with `|`, `&`, `-`, and `^` operations
 - `SortedVector`: ordered persistent collection backed by a size-annotated red-black tree
 - `Cons`: immutable linked-list cells
 - `DoubleVector` and `IntVector`: specialized float64 and int64 vectors with the read-only buffer protocol
@@ -32,22 +32,24 @@ A C compiler and Python development headers are required when installing from a 
 ## Quick start
 
 ```python
-from spork_pds import hash_map, hash_set, sorted_vec, vec
+from spork_pds import Map, Set, Vector, sorted_vec
 
-numbers = vec(1, 2, 3)
-updated = numbers.assoc(1, 20).conj(4)
+numbers = Vector([1, 2, 3])
+extended = numbers + [4, 5]
+repeated = numbers * 2
 
 assert list(numbers) == [1, 2, 3]
-assert list(updated) == [1, 20, 3, 4]
+assert list(extended) == [1, 2, 3, 4, 5]
+assert list(repeated) == [1, 2, 3, 1, 2, 3]
 
-config = hash_map("host", "localhost", "port", 8000)
-production = config.assoc("host", "example.com")
+config = Map({"host": "localhost", "port": 8000})
+production = config | {"host": "example.com"}
 
 assert config["host"] == "localhost"
 assert production["host"] == "example.com"
 
-roles = hash_set(["reader", "writer"])
-admin_roles = roles.conj("admin")
+roles = Set(["reader", "writer"])
+admin_roles = roles | {"admin"}
 
 assert "admin" not in roles
 assert "admin" in admin_roles
@@ -55,6 +57,30 @@ assert "admin" in admin_roles
 ordered = sorted_vec([5, 1, 3, 2, 4])
 assert list(ordered) == [1, 2, 3, 4, 5]
 ```
+
+### Native operators, persistent values
+
+Operators always produce persistent `spork_pds` collections and leave their operands unchanged:
+
+```python
+updated_map = config | {"port": 443}
+combined_set = roles | {"admin", "auditor"}
+reduced_set = combined_set - {"reader"}
+longer_vector = numbers + range(4, 7)
+```
+
+Augmented assignment follows Python's normal immutable-value behavior. It rebinds the name rather than mutating the collection:
+
+```python
+original = Map({"users": 100})
+updated = original
+updated |= {"users": 101}
+
+assert original["users"] == 100
+assert updated["users"] == 101
+```
+
+The named persistent operations—such as `.assoc()`, `.conj()`, and `.disj()`—remain available when an individual update is clearer.
 
 ### Batch updates with transients
 

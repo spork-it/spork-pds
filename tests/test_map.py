@@ -1,4 +1,5 @@
 import pickle
+from types import MappingProxyType
 
 import pytest
 
@@ -36,12 +37,38 @@ def test_map_factory_and_mapping_protocols():
         value["missing"]
 
 
+def test_map_constructor_accepts_mappings_pairs_and_keywords():
+    assert dict(Map().items()) == {}
+    assert dict(Map({"a": 1}, b=2).items()) == {"a": 1, "b": 2}
+    assert dict(Map([("a", 1), ("b", 2)]).items()) == {"a": 1, "b": 2}
+    assert dict(Map(a=1).items()) == {"a": 1}
+
+    with pytest.raises(TypeError):
+        Map({}, {})
+    with pytest.raises(TypeError):
+        Map(42)
+    with pytest.raises(ValueError):
+        Map([("not-a-pair",)])
+    with pytest.raises(TypeError):
+        Map({"a": 1}) | [("b", 2)]
+
+    value = Map({"a": 1})
+    with pytest.raises(TypeError):
+        value.__init__({"a": 2})
+    assert value["a"] == 1
+
+
 def test_map_persistent_operations_and_merge():
     original = hash_map(*sum(([str(i), i] for i in range(100)), []))
     updated = original.assoc("50", 500).assoc("new", 101)
     removed = updated.dissoc("0")
     unchanged = original.dissoc("missing")
     merged = original | {"50": -1, "extra": 200}
+    proxy_merged = original | MappingProxyType({"50": -2, "proxy": 201})
+    reflected = {"50": -2, "left": 201} | original
+
+    rebound = original
+    rebound |= {"50": -3, "augmented": 202}
 
     assert len(original) == 100
     assert original["50"] == 50
@@ -49,8 +76,20 @@ def test_map_persistent_operations_and_merge():
     assert "new" in updated and "new" not in original
     assert "0" in original and "0" not in removed
     assert unchanged is original
+    assert isinstance(merged, Map)
     assert merged["50"] == -1
     assert merged["extra"] == 200
+    assert isinstance(proxy_merged, Map)
+    assert proxy_merged["50"] == -2
+    assert proxy_merged["proxy"] == 201
+    assert isinstance(reflected, Map)
+    assert reflected["50"] == 50  # Right-hand Map wins.
+    assert reflected["left"] == 201
+    assert isinstance(rebound, Map)
+    assert rebound["50"] == -3
+    assert rebound["augmented"] == 202
+    assert rebound is not original
+    assert "augmented" not in original
     assert original.copy() is original
 
 

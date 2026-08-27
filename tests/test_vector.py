@@ -11,6 +11,13 @@ def test_vector_factories_and_sequence_protocols():
     assert list(vec(iter(range(3)))) == [0, 1, 2]
     assert list(vec("abc")) == ["abc"]
     assert list(Vector(range(4))) == [0, 1, 2, 3]
+    assert list(Vector("ab")) == ["a", "b"]
+    with pytest.raises(TypeError):
+        Vector(1)
+    with pytest.raises(TypeError):
+        Vector([1], [2])
+    with pytest.raises(TypeError):
+        Vector(values=[1, 2])
 
     value = vec(*range(100))
     assert len(value) == 100
@@ -18,6 +25,10 @@ def test_vector_factories_and_sequence_protocols():
     assert value[-1] == 99
     assert list(value[10:20:2]) == [10, 12, 14, 16, 18]
     assert 50 in value
+
+    with pytest.raises(TypeError):
+        value.__init__(["replacement"])
+    assert list(value) == list(range(100))
 
 
 def test_vector_persistent_operations_preserve_old_versions():
@@ -36,6 +47,40 @@ def test_vector_persistent_operations_preserve_old_versions():
     assert list(vec(1, 2) + vec(3, 4)) == [1, 2, 3, 4]
 
 
+def test_vector_operators_are_persistent_and_pythonic():
+    original = Vector([1, 2])
+    concatenated = original + [3, 4]
+    repeated = original * 3
+    reflected_repeat = 2 * original
+
+    rebound = original
+    rebound += [3]
+    multiplied = original
+    multiplied *= 2
+
+    assert isinstance(concatenated, Vector)
+    assert list(concatenated) == [1, 2, 3, 4]
+    assert list(repeated) == [1, 2, 1, 2, 1, 2]
+    assert list(reflected_repeat) == [1, 2, 1, 2]
+    assert original * 1 is original
+    assert original * 0 is EMPTY_VECTOR
+    assert original * -1 is EMPTY_VECTOR
+    assert list(original) == [1, 2]
+    assert list(rebound) == [1, 2, 3]
+    assert rebound is not original
+    assert list(multiplied) == [1, 2, 1, 2]
+    assert multiplied is not original
+
+    with pytest.raises(TypeError):
+        [0] + original
+    with pytest.raises(TypeError):
+        original + 3
+    with pytest.raises(TypeError):
+        original * 1.5
+    with pytest.raises(OverflowError):
+        original * (2**100)
+
+
 def test_vector_queries_sort_copy_equality_and_hash():
     value = vec(3, 1, 2, 1)
 
@@ -49,6 +94,7 @@ def test_vector_queries_sort_copy_equality_and_hash():
     assert value.copy() is value
     assert value == vec(3, 1, 2, 1)
     assert hash(value) == hash(vec(3, 1, 2, 1))
+    assert list(reversed(value)) == [1, 2, 1, 3]
 
     with pytest.raises(IndexError):
         value.nth(99)
