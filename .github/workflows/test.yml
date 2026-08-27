@@ -1,0 +1,57 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }} - Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version:
+          ["3.10", "3.11", "3.12", "3.13", "3.13t", "3.14", "3.14t"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+
+      - name: Set PYTHON_GIL=0 for free-threaded builds (Unix)
+        if: endsWith(matrix.python-version, 't') && runner.os != 'Windows'
+        run: echo "PYTHON_GIL=0" >> "$GITHUB_ENV"
+
+      - name: Set PYTHON_GIL=0 for free-threaded builds (Windows)
+        if: endsWith(matrix.python-version, 't') && runner.os == 'Windows'
+        shell: pwsh
+        run: echo "PYTHON_GIL=0" >> $env:GITHUB_ENV
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Build C extension
+        run: python setup.py build_ext --inplace
+
+      - name: Print host info
+        run: python tools/host_info.py
+
+      - name: Verify C extension loads
+        run: python -c "import spork_pds; print('spork_pds loaded successfully')"
+
+      - name: Run tests
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python -m pytest
+
+      - name: Run vector fuzz tests
+        if: runner.os == 'Linux' && matrix.python-version == '3.13'
+        run: python -m tests.fuzzing --examples 1000 --steps 200
