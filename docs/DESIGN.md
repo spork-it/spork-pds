@@ -73,6 +73,3 @@ Persistent binary operators use transients internally to build one result effici
 
 On free-threaded CPython 3.13+, the extension declares that it does not require the GIL. Shared persistent values are immutable; mutable transient values still require application-level single-owner discipline.
 
-## Source layout
-
-The implementation intentionally remains in one file, [`pds.c`](../pds.c). Packaging, tests, documentation, and benchmark utilities live alongside it, but the C implementation is not split across translation units.

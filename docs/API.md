@@ -62,9 +62,9 @@ The primary collection operators follow Python's built-in collection vocabulary:
 | --- | --- |
 | `vector + iterable` | Concatenated `Vector` |
 | `vector * count`, `count * vector` | Repeated `Vector` |
-| `map_value | mapping` | Merged `Map`; right-hand values win |
-| `mapping | map_value` | Merged `Map`; right-hand values win |
-| `set_value | other` | Union as a `Set` |
+| `map_value \| mapping` | Merged `Map`; right-hand values win |
+| `mapping \| map_value` | Merged `Map`; right-hand values win |
+| `set_value \| other` | Union as a `Set` |
 | `set_value & other` | Intersection as a `Set` |
 | `set_value - other` | Difference as a `Set` |
 | `set_value ^ other` | Symmetric difference as a `Set` |
