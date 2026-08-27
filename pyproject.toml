@@ -38,6 +38,10 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+test = [
+    "numpy",
+    "pytest>=8",
+]
 dev = [
     "build>=1",
     "numpy",
