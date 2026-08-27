@@ -71,5 +71,5 @@ General transients register with their corresponding mutable ABCs. The types als
 
 Persistent binary operators use transients internally to build one result efficiently. They do not mutate either operand. Because no in-place number slots are installed, augmented assignments such as `map_value |= updates` and `vector += values` use Python's normal immutable fallback: compute the binary operation, then rebind the target.
 
-On free-threaded CPython 3.13+, the extension declares that it does not require the GIL. Shared persistent values are immutable; mutable transient values still require application-level single-owner discipline.
+On free-threaded CPython 3.14+, the extension declares that it does not require the GIL. Shared persistent values are immutable; mutable transient values still require application-level single-owner discipline.
 
