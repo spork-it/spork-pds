@@ -6,6 +6,17 @@ The benchmark suite compares the standalone `spork_pds` C extension with Python'
 
 The suite was ported from `spork-lang/tools/benchmark_pds.py` when the extension became its own project.
 
+This document describes methodology rather than publishing a permanent winner table. Results depend heavily on the host and workload; generate a report when you need a comparable snapshot.
+
+## Contents
+
+- [What it measures](#what-it-measures)
+- [Methodology](#methodology)
+- [Running the suite](#running-the-suite)
+- [Reading results](#reading-results)
+- [Generating a report](#generating-a-report)
+- [Adding benchmarks](#adding-benchmarks)
+
 ## What it measures
 
 ### Vectors
@@ -53,11 +64,13 @@ For each case the runner:
 
 The default random seed is fixed so access and update workloads are reproducible. Results still vary with CPU, compiler, Python build, allocator, thermal state, background load, and collection size.
 
-Python built-ins are mutable, while `spork-pds` values preserve old versions. Raw timings should be interpreted together with those semantic differences.
+Python built-ins are mutable, while `spork-pds` values preserve old versions. Raw timings must be interpreted together with those semantic differences. A persistent update is most directly comparable to copying a built-in collection and then mutating the copy when both workloads must preserve the old version.
+
+The runner is intentionally lightweight rather than a statistical benchmarking framework: it reports one mean from one process. Use multiple fresh processes and inspect variance before drawing small-difference conclusions.
 
 ## Running the suite
 
-Set up and build the project first:
+Run commands from the repository root. Set up and build the project first:
 
 ```bash
 make venv
@@ -81,11 +94,32 @@ Choose collection size, timing iterations, and random seed:
 
 NumPy comparisons run when NumPy is installed and are skipped otherwise. The development extra installs NumPy.
 
-The equivalent Make target is:
+The equivalent Make target builds the extension first:
 
 ```bash
 make benchmark BENCH_ARGS="--size 100000 --iter 50 --seed 0"
 ```
+
+Set `NO_COLOR=1` for plain output when saving terminal results:
+
+```bash
+NO_COLOR=1 make benchmark BENCH_ARGS="--size 100000 --iter 50 --seed 0"
+```
+
+## Reading results
+
+Each group is sorted from fastest to slowest. Ratios are relative to the fastest case in that group, not necessarily to Python's built-in collection. `~same` means the measured ratio falls within the runner's display threshold; it is not a claim of statistical equivalence.
+
+Before comparing two rows, check:
+
+- whether both operations preserve the same previous versions;
+- whether construction includes input conversion or starts from prepared data;
+- whether a transient or persistent update matches the intended application pattern;
+- whether a typed-vector result pays its first buffer-materialization cost;
+- whether the collection size is representative;
+- whether the difference persists across repeated processes and realistic data.
+
+Microbenchmarks isolate operation overhead. They do not predict end-to-end application performance, memory use, cache behavior, or contention by themselves.
 
 ## Generating a report
 
@@ -105,7 +139,9 @@ Or:
 make benchmark-report REPORT_ARGS="--iter 50 --seed 0 --output benchmark-results.md 25000 50000 100000"
 ```
 
-Generated reports are snapshots for one machine and environment. Keep the command, host information, package version, sizes, iteration count, and seed with any published result.
+Generated reports are snapshots for one machine and environment. The report includes host information, package version, sizes, iteration count, seed, and raw output. Keep all of that context with any published result, along with compiler flags or environment details that the host report does not capture.
+
+For comparisons across commits, use the same machine and power mode, rebuild the extension for each commit, close unrelated workloads, and run the report more than once. Avoid comparing generated reports from different Python build modes as though only the `spork-pds` code changed.
 
 ## Adding benchmarks
 
@@ -115,4 +151,8 @@ Add focused methods to `Benchmarks` in `tools/benchmark_pds.py` and call them fr
 - prepare reusable data outside the timed function when setup is not under test;
 - compare operations with clearly stated semantics;
 - avoid combining unrelated work in one timing;
-- remain practical at the default sizes.
+- remain practical at the default sizes;
+- use deterministic input from the suite's seeded random generator where randomness is needed;
+- label persistent, transient, copying, and mutating cases so their semantics are visible.
+
+When setup is part of the operation under test, say so in the case name. When it is not, build inputs in `Benchmarks.__init__` or another untimed preparation step.

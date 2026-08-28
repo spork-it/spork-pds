@@ -1,4 +1,4 @@
-.PHONY: help venv build build-debug install-dev clean test fuzz fuzz-long benchmark benchmark-report verify \
+.PHONY: help venv build build-debug install-dev clean test verify-docs fuzz fuzz-long benchmark benchmark-report verify \
         dist sdist wheel upload-test upload check-dist \
         clean-build clean-pyc clean-venv clean-all
 
@@ -20,6 +20,7 @@ help:
 	@echo ""
 	@echo "Testing:"
 	@echo "  test             - Run the pytest suite"
+	@echo "  verify-docs      - Execute documentation examples"
 	@echo "  fuzz             - Run 1,000 vector fuzz examples"
 	@echo "  fuzz-long        - Run 50,000 vector fuzz examples"
 	@echo "  benchmark        - Run the benchmark suite (BENCH_ARGS='...')"
@@ -98,6 +99,9 @@ install-dev: $(VENV_READY) build
 test: build
 	$(PYTHON) -m pytest
 
+verify-docs: build
+	@$(PYTHON) tools/verify_docs.py
+
 fuzz: build
 	$(PYTHON) -m tests.fuzzing --examples 1000 --steps 200
 
@@ -110,7 +114,7 @@ benchmark: build
 benchmark-report: build
 	$(PYTHON) tools/generate_benchmark_report.py $(REPORT_ARGS)
 
-verify: test check-dist
+verify: test verify-docs check-dist
 
 # ============================================================================
 # Packaging

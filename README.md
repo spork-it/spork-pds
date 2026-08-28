@@ -120,6 +120,7 @@ The first buffer request materializes and caches contiguous storage; subsequent 
 
 ## Documentation
 
+- [Practical guide](docs/GUIDE.md)
 - [API reference](docs/API.md)
 - [Design and complexity](docs/DESIGN.md)
 - [Benchmark suite](docs/BENCHMARKS.md)
