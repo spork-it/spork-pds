@@ -2,6 +2,11 @@
 
 All notable changes to `spork-pds` will be documented here.
 
+## 0.1.2
+
+- Add `spork.pds` as the canonical public import namespace.
+- Retain the native `spork_pds` module for import, pickle, and type-name compatibility.
+
 ## 0.1.1
 
 - Expand API, boundary, collision, transient lifecycle, and model-based test coverage.

@@ -21,7 +21,7 @@ Choose these collections when old versions must remain available, values need ha
 The classes accept Python-style inputs:
 
 ```python
-from spork_pds import Map, Set, Vector, sorted_vec
+from spork.pds import Map, Set, Vector, sorted_vec
 
 vector = Vector(range(4))
 config = Map({"host": "localhost"}, port=8000)
@@ -32,7 +32,7 @@ ordered = sorted_vec([3, 1, 2, 2])
 Factories are convenient for variadic construction:
 
 ```python
-from spork_pds import hash_map, hash_set, vec, vec_f64, vec_i64
+from spork.pds import hash_map, hash_set, vec, vec_f64, vec_i64
 
 vector = vec(10, 20, 30)
 config = hash_map("host", "localhost", "port", 8000)
@@ -57,7 +57,7 @@ Use `Vector(iterable)` when normal Python constructor behavior is clearer.
 Persistent operations return a value rather than modifying the receiver:
 
 ```python
-from spork_pds import Map, Vector
+from spork.pds import Map, Vector
 
 before = Vector([10, 20, 30])
 after = before.assoc(1, 99).conj(40)
@@ -97,7 +97,7 @@ Some no-op operations can return the original object as an optimization. Write c
 Repeated persistent updates preserve every intermediate version. When only the final result matters, use a transient builder:
 
 ```python
-from spork_pds import EMPTY_VECTOR
+from spork.pds import EMPTY_VECTOR
 
 builder = EMPTY_VECTOR.transient()
 for number in range(100_000):
@@ -119,7 +119,7 @@ After conversion, reads and writes through the transient raise `RuntimeError`.
 General transients support familiar mutable Python protocols:
 
 ```python
-from spork_pds import Map, Set, Vector
+from spork.pds import Map, Set, Vector
 
 items = Vector([3, 1]).transient()
 items.append(2)
@@ -147,7 +147,7 @@ Do not use a transient as a long-lived mutable collection or share one among thr
 `SortedVector` retains duplicates and stores its ordering policy with the value:
 
 ```python
-from spork_pds import sorted_vec
+from spork.pds import sorted_vec
 
 scores = sorted_vec([30, 10, 20, 20], reverse=True)
 updated = scores.conj(25)
@@ -175,7 +175,7 @@ The key function and `reverse` flag are retained by `.conj()`, `.disj()`, and `.
 `DoubleVector` and `IntVector` store unboxed values and export one-dimensional, read-only buffers:
 
 ```python
-from spork_pds import vec_f64, vec_i64
+from spork.pds import vec_f64, vec_i64
 
 floats = vec_f64(1, 2.5, 3)
 integers = vec_i64(1, 2, 3)

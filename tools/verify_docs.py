@@ -41,7 +41,7 @@ def examples() -> list[Example]:
 def python_environment() -> dict[str, object]:
     """Return a fresh environment with public APIs and common example fixtures."""
     namespace: dict[str, object] = {"__name__": "__docs_example__"}
-    exec("from spork_pds import *", namespace)
+    exec("from spork.pds import *", namespace)
     exec(
         """
 numbers = Vector([1, 2, 3])

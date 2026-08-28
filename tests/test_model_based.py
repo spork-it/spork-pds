@@ -1,7 +1,7 @@
 import bisect
 import random
 
-from spork_pds import EMPTY_MAP, EMPTY_SET, EMPTY_VECTOR, sorted_vec
+from spork.pds import EMPTY_MAP, EMPTY_SET, EMPTY_VECTOR, sorted_vec
 
 
 class CollisionKey:

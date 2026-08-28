@@ -2,7 +2,7 @@ import pickle
 
 import pytest
 
-from spork_pds import EMPTY_VECTOR, Vector, vec
+from spork.pds import EMPTY_VECTOR, Vector, vec
 
 
 def test_vector_factories_and_sequence_protocols():

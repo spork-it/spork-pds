@@ -2,7 +2,7 @@ import pickle
 
 import pytest
 
-from spork_pds import (
+from spork.pds import (
     EMPTY_DOUBLE_VECTOR,
     EMPTY_LONG_VECTOR,
     DoubleVector,

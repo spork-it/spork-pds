@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spork-pds"
-version = "0.1.1"
+version = "0.1.2"
 description = "Fast persistent data structures for Python"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -59,8 +59,10 @@ Repository = "https://github.com/spork-it/spork-pds"
 Issues = "https://github.com/spork-it/spork-pds/issues"
 Changelog = "https://github.com/spork-it/spork-pds/blob/main/CHANGELOG.md"
 
-[tool.setuptools]
-packages = []
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["spork*"]
+namespaces = true
 
 [tool.pytest.ini_options]
 addopts = "-ra"

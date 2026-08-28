@@ -8,7 +8,7 @@ using random operations to find edge cases and verify correctness.
 import random
 from typing import Any
 
-from spork_pds import EMPTY_VECTOR, Vector
+from spork.pds import EMPTY_VECTOR, Vector
 
 from .fuzz import Fuzzer, random_value
 

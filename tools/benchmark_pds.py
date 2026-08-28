@@ -21,9 +21,9 @@ try:
 except ImportError:
     HAS_NUMPY = False
 
-# Import the spork-pds C extension
+# Import the spork-pds public API
 try:
-    from spork_pds import (
+    from spork.pds import (
         EMPTY_DOUBLE_VECTOR,
         EMPTY_LONG_VECTOR,
         EMPTY_MAP,
@@ -42,7 +42,7 @@ try:
     )
 
 except ImportError:
-    print("❌ Error: Could not import 'spork_pds'.")
+    print("❌ Error: Could not import 'spork.pds'.")
     print(
         "   Make sure you have built the C extension (python setup.py build_ext --inplace)"
     )

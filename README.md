@@ -32,7 +32,7 @@ A C compiler and Python development headers are required when installing from a 
 ## Quick start
 
 ```python
-from spork_pds import Map, Set, Vector, sorted_vec
+from spork.pds import Map, Set, Vector, sorted_vec
 
 numbers = Vector([1, 2, 3])
 extended = numbers + [4, 5]
@@ -60,7 +60,7 @@ assert list(ordered) == [1, 2, 3, 4, 5]
 
 ### Native operators, persistent values
 
-Operators always produce persistent `spork_pds` collections and leave their operands unchanged:
+Operators always produce persistent `spork.pds` collections and leave their operands unchanged:
 
 ```python
 updated_map = config | {"port": 443}
@@ -87,7 +87,7 @@ The named persistent operationsâ€”such as `.assoc()`, `.conj()`, and `.disj()`â€
 Persistent updates are ideal when each intermediate version matters. For a batch where only the final value matters, use a transient:
 
 ```python
-from spork_pds import EMPTY_VECTOR
+from spork.pds import EMPTY_VECTOR
 
 builder = EMPTY_VECTOR.transient()
 for value in range(100_000):
@@ -102,7 +102,7 @@ Calling `persistent()` invalidates the transient. Further edits and element acce
 ### Typed vectors and NumPy
 
 ```python
-from spork_pds import vec_f64, vec_i64
+from spork.pds import vec_f64, vec_i64
 
 floats = vec_f64(1.0, 2.0, 3.0)
 integers = vec_i64(1, 2, 3)

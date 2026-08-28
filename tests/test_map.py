@@ -3,7 +3,7 @@ from types import MappingProxyType
 
 import pytest
 
-from spork_pds import Map, hash_map
+from spork.pds import Map, hash_map
 
 
 class CollisionKey:

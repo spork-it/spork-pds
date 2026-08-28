@@ -1,9 +1,9 @@
 # API Reference
 
-The distribution name is `spork-pds`; the import name is `spork_pds`.
+The distribution name is `spork-pds`; the canonical import name is `spork.pds`. The native `spork_pds` extension remains importable for compatibility.
 
 ```python
-import spork_pds
+import spork.pds as pds
 ```
 
 This reference describes the public Python surface. For task-oriented examples and collection-selection advice, see the [Practical Guide](GUIDE.md).
@@ -75,7 +75,7 @@ The `vec`, `vec_f64`, `vec_i64`, `hash_map`, and `hash_set` empty factories retu
 The class constructors follow familiar Python collection conventions:
 
 ```python
-from spork_pds import Map, Set, Vector
+from spork.pds import Map, Set, Vector
 
 vector = Vector(range(3))
 map_value = Map({"a": 1}, b=2)
@@ -87,7 +87,7 @@ set_value = Set([1, 2, 2])
 Factories provide the library's variadic forms:
 
 ```python
-from spork_pds import hash_map, hash_set, vec
+from spork.pds import hash_map, hash_set, vec
 
 assert list(vec(1, 2, 3)) == [1, 2, 3]
 assert dict(hash_map("a", 1, "b", 2).items()) == {"a": 1, "b": 2}
@@ -151,7 +151,7 @@ assert updated["count"] == 2
 A general-purpose persistent sequence. `Vector()` accepts at most one iterable; use `vec(*values)` when variadic element construction is convenient.
 
 ```python
-from spork_pds import Vector
+from spork.pds import Vector
 
 original = Vector([10, 20, 30])
 appended = original + [40]
@@ -209,7 +209,7 @@ Both support `len`, iteration, indexing, negative indexing, slicing, hashing, `n
 Their buffers are one-dimensional and read-only:
 
 ```python
-from spork_pds import vec_f64, vec_i64
+from spork.pds import vec_f64, vec_i64
 
 floats = vec_f64(1, 2.5, 3)
 integers = vec_i64(1, 2, 3)
@@ -231,7 +231,7 @@ A first buffer request flattens the trie into cached contiguous storage. Further
 A persistent hash map.
 
 ```python
-from spork_pds import Map
+from spork.pds import Map
 
 original = Map({"a": 1, "b": 2})
 updated = original | {"b": 20, "c": 3}
@@ -280,7 +280,7 @@ result = transient.persistent()
 A persistent hash set.
 
 ```python
-from spork_pds import Set
+from spork.pds import Set
 
 left = Set([1, 2, 3])
 right = Set([3, 4])
@@ -319,7 +319,7 @@ The transient supports length, membership, and iteration while editable. Its mut
 A persistent ordered collection that retains duplicates and supports O(log n) indexing by rank.
 
 ```python
-from spork_pds import sorted_vec
+from spork.pds import sorted_vec
 
 values = sorted_vec([3, 1, 2, 2])
 assert list(values) == [1, 2, 2, 3]
@@ -347,7 +347,7 @@ Methods:
 An immutable linked-list cell with read-only `first` and `rest` properties.
 
 ```python
-from spork_pds import cons
+from spork.pds import cons
 
 values = cons(1, cons(2, cons(3)))
 assert list(values) == [1, 2, 3]

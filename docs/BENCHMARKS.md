@@ -2,7 +2,7 @@
 
 ## Overview
 
-The benchmark suite compares the standalone `spork_pds` C extension with Python's built-in mutable collections. It imports the extension directly, so no Spork compiler or runtime is involved.
+The benchmark suite compares the persistent collections exposed by `spork.pds` with Python's built-in mutable collections. The public module is a thin facade over the native extension, so no Spork compiler or runtime is involved.
 
 The suite was ported from `spork-lang/tools/benchmark_pds.py` when the extension became its own project.
 

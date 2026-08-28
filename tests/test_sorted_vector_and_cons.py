@@ -3,7 +3,7 @@ import pickle
 
 import pytest
 
-from spork_pds import Cons, SortedVector, cons, sorted_vec
+from spork.pds import Cons, SortedVector, cons, sorted_vec
 
 
 def test_sorted_vector_ordering_indexing_and_queries():

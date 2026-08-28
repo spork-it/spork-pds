@@ -2,7 +2,7 @@ import pickle
 
 import pytest
 
-from spork_pds import Set, hash_set
+from spork.pds import Set, hash_set
 
 
 class CollisionValue:

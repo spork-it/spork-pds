@@ -4,7 +4,13 @@ from typing import get_args, get_origin
 
 import pytest
 
-import spork_pds as pds
+import spork.pds as pds
+import spork_pds as legacy_pds
+
+
+def test_legacy_module_reexports_the_same_objects():
+    for name in pds.__all__:
+        assert getattr(legacy_pds, name) is getattr(pds, name)
 
 
 def test_public_exports_and_module_names():

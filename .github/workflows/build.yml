@@ -59,7 +59,7 @@ jobs:
           CIBW_SKIP: "*-musllinux_*"
           CIBW_BUILD_VERBOSITY: 1
           CIBW_TEST_COMMAND: >-
-            python -c "import spork_pds as p;
+            python -c "import spork.pds as p;
             assert list(p.vec(1, 2, 3).conj(4)) == [1, 2, 3, 4]"
 
       - name: Upload wheels

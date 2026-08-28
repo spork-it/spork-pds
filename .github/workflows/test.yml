@@ -69,8 +69,8 @@ jobs:
       - name: Print host info
         run: python tools/host_info.py
 
-      - name: Verify C extension loads
-        run: python -c "import spork_pds; print('spork_pds loaded successfully')"
+      - name: Verify public namespace and legacy extension load
+        run: python -c "import spork.pds, spork_pds; assert spork.pds.Vector is spork_pds.Vector"
 
       - name: Run tests
         env:

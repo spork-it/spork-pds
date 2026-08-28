@@ -1,0 +1,63 @@
+"""Public namespace for the persistent data structures from ``spork-pds``.
+
+The native ``spork_pds`` extension remains the implementation so existing
+imports, pickle payloads, and type representations stay compatible.
+"""
+
+from spork_pds import (
+    EMPTY_DOUBLE_VECTOR,
+    EMPTY_LONG_VECTOR,
+    EMPTY_MAP,
+    EMPTY_SET,
+    EMPTY_SORTED_VECTOR,
+    EMPTY_VECTOR,
+    Cons,
+    DoubleVector,
+    IntVector,
+    Map,
+    Set,
+    SortedVector,
+    TransientDoubleVector,
+    TransientIntVector,
+    TransientMap,
+    TransientSet,
+    TransientSortedVector,
+    TransientVector,
+    Vector,
+    cons,
+    hash_map,
+    hash_set,
+    sorted_vec,
+    vec,
+    vec_f64,
+    vec_i64,
+)
+
+__all__ = [
+    "Cons",
+    "Vector",
+    "TransientVector",
+    "DoubleVector",
+    "TransientDoubleVector",
+    "IntVector",
+    "TransientIntVector",
+    "Map",
+    "TransientMap",
+    "Set",
+    "TransientSet",
+    "SortedVector",
+    "TransientSortedVector",
+    "EMPTY_VECTOR",
+    "EMPTY_DOUBLE_VECTOR",
+    "EMPTY_LONG_VECTOR",
+    "EMPTY_MAP",
+    "EMPTY_SET",
+    "EMPTY_SORTED_VECTOR",
+    "cons",
+    "vec",
+    "vec_f64",
+    "vec_i64",
+    "hash_map",
+    "hash_set",
+    "sorted_vec",
+]

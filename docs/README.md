@@ -17,7 +17,7 @@
 ## Quick example
 
 ```python
-from spork_pds import Map, Set, Vector
+from spork.pds import Map, Set, Vector
 
 base = Vector([1, 2, 3])
 updated = base.conj(4)
@@ -48,6 +48,6 @@ Run `make verify-docs` from the repository root. It executes every Python fence 
 
 ## Scope
 
-The distribution name is `spork-pds`; the Python import is `spork_pds`. It has no dependency on the [Spork language](https://github.com/spork-it/spork-lang).
+The distribution name is `spork-pds`; the canonical Python import is `spork.pds`. The legacy `spork_pds` extension import remains available for compatibility. The package has no dependency on the [Spork language](https://github.com/spork-it/spork-lang).
 
 See the project [README](../README.md) for installation, supported Python versions, development setup, and release-level highlights.
