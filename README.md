@@ -7,8 +7,6 @@
 
 The package is the standalone home of the persistent data structures originally developed for [Spork](https://github.com/spork-it/spork-lang). It has no dependency on the Spork language or runtime.
 
-> **Alpha:** The API and binary compatibility may change between releases.
-
 ## Features
 
 - `Vector`: bit-partitioned persistent vector with indexing, slicing, `+` concatenation, and `*` repetition

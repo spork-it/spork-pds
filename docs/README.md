@@ -2,7 +2,7 @@
 
 `spork-pds` is a standalone CPython extension providing immutable persistent collections and single-use transient builders.
 
-> **Version note:** These documents describe the current `main` branch and may be ahead of the latest PyPI release. The project is alpha and APIs may change between releases.
+> **Version note:** These documents describe the branch you are viewing and may be ahead of the latest PyPI release.
 
 ## Choose a document
 
