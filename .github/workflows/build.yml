@@ -6,8 +6,15 @@ on:
       - "v*"
 
 jobs:
+  full_tests:
+    name: Run full pre-release test suite
+    uses: ./.github/workflows/test.yml
+    with:
+      full: true
+
   build_wheels:
     name: Build wheels on ${{ matrix.os }} (${{ matrix.arch }})
+    needs: full_tests
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -63,6 +70,7 @@ jobs:
 
   build_sdist:
     name: Build source distribution
+    needs: full_tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

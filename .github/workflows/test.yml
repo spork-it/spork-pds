@@ -1,44 +1,43 @@
 name: Tests
 
 on:
+  # Regular branch and pull-request runs use the smaller core matrix below.
+  # Tag releases call this workflow with `full: true` from build.yml.
   push:
+    branches:
+      - "**"
   pull_request:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Run the full release test matrix
+        required: true
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      full:
+        description: Run the full release test matrix
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   test:
-    name: >-
-      Test on ${{ matrix.os }} (${{ matrix.architecture }}) -
-      Python ${{ matrix.python-version }}
+    name: Test on ${{ matrix.os }} - Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # Branch and pull-request runs cover the minimum, latest, and
+      # free-threaded interpreters on Linux. Releases exercise every supported
+      # OS, architecture, and Python version.
       matrix:
-        os:
-          - ubuntu-latest
-          - ubuntu-24.04-arm
-          - windows-latest
-          - windows-11-arm
-          - macos-15-intel
-          - macos-15
-        python-version:
-          ["3.10", "3.11", "3.12", "3.13", "3.14", "3.14t"]
+        os: ${{ inputs.full && fromJSON('["ubuntu-latest","ubuntu-24.04-arm","windows-latest","windows-11-arm","macos-15-intel","macos-15"]') || fromJSON('["ubuntu-latest"]') }}
+        python-version: ${{ inputs.full && fromJSON('["3.10","3.11","3.12","3.13","3.14","3.14t"]') || fromJSON('["3.10","3.14","3.14t"]') }}
         exclude:
           # actions/setup-python does not provide CPython 3.10 for Windows ARM64.
           - os: windows-11-arm
             python-version: "3.10"
-        include:
-          - os: ubuntu-latest
-            architecture: x64
-          - os: ubuntu-24.04-arm
-            architecture: arm64
-          - os: windows-latest
-            architecture: x64
-          - os: windows-11-arm
-            architecture: arm64
-          - os: macos-15-intel
-            architecture: x64
-          - os: macos-15
-            architecture: arm64
 
     steps:
       - uses: actions/checkout@v5
@@ -47,7 +46,7 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-          architecture: ${{ matrix.architecture }}
+          architecture: ${{ (endsWith(matrix.os, '-arm') || matrix.os == 'macos-15') && 'arm64' || 'x64' }}
           allow-prereleases: true
 
       - name: Set PYTHON_GIL=0 for free-threaded builds (Unix)
@@ -88,7 +87,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.14t"]
+        python-version: ${{ inputs.full && fromJSON('["3.10","3.11","3.12","3.13","3.14","3.14t"]') || fromJSON('["3.14"]') }}
 
     steps:
       - uses: actions/checkout@v5
