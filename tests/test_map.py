@@ -106,28 +106,100 @@ def test_map_handles_hash_collisions():
     assert updated[CollisionKey(10)] == "ten"
     assert CollisionKey(5) not in removed
 
+    transient = value.transient()
+    for index in range(0, 20, 2):
+        transient.dissoc_mut(CollisionKey(index))
+    for index in range(20, 30):
+        transient.assoc_mut(CollisionKey(index), index)
+    result = transient.persistent()
+
+    assert set(key.value for key in result) == set(range(1, 20, 2)) | set(
+        range(20, 30)
+    )
+    assert len(value) == 20
+
+
+def test_map_hamt_expansion_and_contraction_preserve_snapshots():
+    original = Map({index: str(index) for index in range(200)})
+    value = original
+
+    for index in range(0, 200, 2):
+        value = value.dissoc(index)
+    midpoint = value
+    for index in range(1, 200, 2):
+        value = value.dissoc(index)
+
+    assert len(value) == 0
+    assert dict(original.items()) == {index: str(index) for index in range(200)}
+    assert dict(midpoint.items()) == {
+        index: str(index) for index in range(1, 200, 2)
+    }
+
+
+def test_map_none_values_errors_and_sequence_conversion():
+    value = Map({"present": None, "other": 2})
+    default = object()
+
+    assert value["present"] is None
+    assert value.get("present", default) is None
+    assert value.get("missing", default) is default
+    assert {tuple(pair) for pair in value.to_seq()} == {
+        ("present", None),
+        ("other", 2),
+    }
+    assert hash_map().to_seq() is None
+
+    with pytest.raises(TypeError):
+        value.assoc([], 1)
+    with pytest.raises(TypeError):
+        [] in value
+    with pytest.raises(TypeError):
+        hash(Map({"unhashable-value": []}))
+
 
 def test_transient_map_batch_workflow_and_invalidation():
     original = hash_map("a", 1)
     transient = original.transient()
 
-    transient.assoc_mut("b", 2)
+    assert transient.assoc_mut("b", 2) is transient
     transient["c"] = 3
-    transient.dissoc_mut("a")
+    assert transient.dissoc_mut("a") is transient
+    assert transient.dissoc_mut("missing") is transient
     del transient["b"]
 
     assert len(transient) == 1
+    assert transient["c"] == 3
     assert transient.get("c") == 3
+    assert transient.get("missing", 99) == 99
+    assert "c" in transient
     assert list(transient.keys()) == ["c"]
+    assert list(transient.values()) == [3]
+    assert list(transient.items()) == [("c", 3)]
+    with pytest.raises(KeyError):
+        del transient["missing"]
+    with pytest.raises(KeyError):
+        transient["missing"]
 
     result = transient.persistent()
     assert dict(original.items()) == {"a": 1}
     assert dict(result.items()) == {"c": 3}
 
-    with pytest.raises(RuntimeError):
-        transient.assoc_mut("d", 4)
-    with pytest.raises(RuntimeError):
-        list(transient)
+    operations = [
+        lambda: len(transient),
+        lambda: transient["c"],
+        lambda: "c" in transient,
+        lambda: iter(transient),
+        lambda: transient.get("c"),
+        lambda: transient.keys(),
+        lambda: transient.values(),
+        lambda: transient.items(),
+        lambda: transient.assoc_mut("d", 4),
+        lambda: transient.dissoc_mut("c"),
+        lambda: transient.persistent(),
+    ]
+    for operation in operations:
+        with pytest.raises(RuntimeError):
+            operation()
 
 
 def test_map_equality_hash_and_pickle():

@@ -2,20 +2,39 @@ import pickle
 
 import pytest
 
-from spork_pds import DoubleVector, IntVector, vec_f64, vec_i64
+from spork_pds import (
+    EMPTY_DOUBLE_VECTOR,
+    EMPTY_LONG_VECTOR,
+    DoubleVector,
+    IntVector,
+    vec_f64,
+    vec_i64,
+)
 
 
 def test_double_vector_operations_and_buffer():
     value = vec_f64(1, 2.5, 3)
     appended = value.conj(4)
+    default = object()
 
     assert isinstance(value, DoubleVector)
     assert list(value) == [1.0, 2.5, 3.0]
     assert value[-1] == 3.0
-    assert value.nth(99, "missing") == "missing"
+    assert value.nth(99, default) is default
+    assert isinstance(value[::2], DoubleVector)
     assert list(value[::2]) == [1.0, 3.0]
+    assert list(value[::-1]) == [3.0, 2.5, 1.0]
     assert list(appended) == [1.0, 2.5, 3.0, 4.0]
     assert list(value) == [1.0, 2.5, 3.0]
+    assert hash(value) == hash(vec_f64(1, 2.5, 3))
+    assert repr(value) == "vec_f64([1.0, 2.5, 3.0])"
+
+    with pytest.raises(IndexError):
+        value[3]
+    with pytest.raises(IndexError):
+        value.nth(-4)
+    with pytest.raises(TypeError):
+        value["0"]
 
     buffer = memoryview(value)
     assert buffer.readonly
@@ -32,12 +51,25 @@ def test_int_vector_operations_boundaries_and_buffer():
     values = [-(2**63), -1, 0, 1, 2**63 - 1]
     value = vec_i64(*values)
     appended = value.conj(42)
+    default = object()
 
     assert isinstance(value, IntVector)
     assert list(value) == values
     assert value[-1] == 2**63 - 1
+    assert value.nth(99, default) is default
+    assert isinstance(value[1:4], IntVector)
     assert list(value[1:4]) == [-1, 0, 1]
+    assert list(value[::-1]) == list(reversed(values))
     assert list(appended) == values + [42]
+    assert hash(value) == hash(vec_i64(*values))
+    assert repr(value) == f"vec_i64([{', '.join(map(str, values))}])"
+
+    with pytest.raises(IndexError):
+        value[len(value)]
+    with pytest.raises(IndexError):
+        value.nth(-len(value) - 1)
+    with pytest.raises(TypeError):
+        value["0"]
 
     buffer = memoryview(value)
     assert buffer.readonly
@@ -52,32 +84,84 @@ def test_int_vector_operations_boundaries_and_buffer():
         vec_i64(2**63)
 
 
+def test_typed_vector_class_constructors_and_argument_errors():
+    assert list(DoubleVector(range(3))) == [0.0, 1.0, 2.0]
+    assert list(DoubleVector(1, 2.5)) == [1.0, 2.5]
+    assert list(IntVector(range(3))) == [0, 1, 2]
+    assert list(IntVector(1, 2)) == [1, 2]
+
+    with pytest.raises(TypeError):
+        DoubleVector(values=[1, 2])
+    with pytest.raises(TypeError):
+        IntVector(values=[1, 2])
+    with pytest.raises(TypeError):
+        DoubleVector("not-a-number")
+    with pytest.raises(TypeError):
+        IntVector(1.5)
+
+
 def test_large_typed_vectors_cross_trie_boundaries():
     doubles = vec_f64(*range(1100))
     integers = vec_i64(*range(1100))
 
     assert len(doubles) == len(integers) == 1100
-    assert doubles[1024] == 1024.0
-    assert integers[1024] == 1024
+    for index in (0, 31, 32, 33, 1023, 1024, 1055, 1056, 1099):
+        assert doubles[index] == float(index)
+        assert integers[index] == index
     assert sum(doubles) == sum(range(1100))
     assert sum(integers) == sum(range(1100))
 
+    assert memoryview(doubles).tolist() == [float(value) for value in range(1100)]
+    assert memoryview(integers).tolist() == list(range(1100))
+
 
 def test_typed_vector_transients_and_invalidation():
-    double_transient = vec_f64(1, 2).transient()
-    double_transient.conj_mut(3)
+    original_doubles = vec_f64(*range(40))
+    double_transient = original_doubles.transient()
+    assert double_transient.conj_mut(40) is double_transient
+    for value in range(41, 1100):
+        double_transient.conj_mut(value)
     doubles = double_transient.persistent()
-    assert list(doubles) == [1.0, 2.0, 3.0]
+    assert list(doubles) == [float(value) for value in range(1100)]
+    assert list(original_doubles) == [float(value) for value in range(40)]
 
-    int_transient = vec_i64(1, 2).transient()
-    int_transient.conj_mut(3)
+    original_integers = vec_i64(*range(40))
+    int_transient = original_integers.transient()
+    assert int_transient.conj_mut(40) is int_transient
+    for value in range(41, 1100):
+        int_transient.conj_mut(value)
     integers = int_transient.persistent()
-    assert list(integers) == [1, 2, 3]
+    assert list(integers) == list(range(1100))
+    assert list(original_integers) == list(range(40))
 
-    with pytest.raises(RuntimeError):
-        double_transient.conj_mut(4)
-    with pytest.raises(RuntimeError):
-        int_transient.conj_mut(4)
+    for operation in (
+        lambda: double_transient.conj_mut(1100),
+        lambda: double_transient.persistent(),
+        lambda: int_transient.conj_mut(1100),
+        lambda: int_transient.persistent(),
+    ):
+        with pytest.raises(RuntimeError):
+            operation()
+
+
+def test_empty_typed_vector_buffers_and_read_only_enforcement():
+    for value, expected_format in (
+        (EMPTY_DOUBLE_VECTOR, "d"),
+        (EMPTY_LONG_VECTOR, "q"),
+    ):
+        view = memoryview(value)
+        assert view.format == expected_format
+        assert view.readonly
+        assert view.shape == (0,)
+        assert view.nbytes == 0
+        assert view.tolist() == []
+
+    value = vec_i64(1, 2, 3)
+    first = memoryview(value)
+    second = memoryview(value)
+    assert first.obj is second.obj is value
+    with pytest.raises(TypeError):
+        first[0] = 10
 
 
 def test_typed_vector_pickle_round_trip():

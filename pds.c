@@ -2596,6 +2596,11 @@ static PyObject *DoubleVector_transient(DoubleVector *self, PyObject *Py_UNUSED(
 }
 
 static int DoubleVector_init(DoubleVector *self, PyObject *args, PyObject *kwds) {
+    if (kwds && PyDict_GET_SIZE(kwds) > 0) {
+        PyErr_SetString(PyExc_TypeError, "DoubleVector takes no keyword arguments");
+        return -1;
+    }
+
     Py_ssize_t n = PyTuple_Size(args);
 
     if (n == 0) {
@@ -3662,6 +3667,11 @@ static PyObject *IntVector_transient(IntVector *self, PyObject *Py_UNUSED(ignore
 }
 
 static int IntVector_init(IntVector *self, PyObject *args, PyObject *kwds) {
+    if (kwds && PyDict_GET_SIZE(kwds) > 0) {
+        PyErr_SetString(PyExc_TypeError, "IntVector takes no keyword arguments");
+        return -1;
+    }
+
     Py_ssize_t n = PyTuple_Size(args);
 
     if (n == 0) {
@@ -4220,6 +4230,8 @@ static PyObject *TransientVector_persistent(TransientVector *self, PyObject *Py_
 // === TransientVector MutableSequence Protocol ===
 
 static Py_ssize_t TransientVector_length(TransientVector *self) {
+    TransientVector_ensure_editable(self);
+    if (PyErr_Occurred()) return -1;
     return self->cnt;
 }
 
@@ -6679,6 +6691,8 @@ static PyObject *TransientMap_persistent(TransientMap *self, PyObject *Py_UNUSED
 // === TransientMap MutableMapping Protocol ===
 
 static Py_ssize_t TransientMap_length(TransientMap *self) {
+    TransientMap_ensure_editable(self);
+    if (PyErr_Occurred()) return -1;
     return self->cnt;
 }
 
@@ -8171,6 +8185,8 @@ static PyObject *TransientSet_persistent(TransientSet *self, PyObject *Py_UNUSED
 // === TransientSet MutableSet Protocol ===
 
 static Py_ssize_t TransientSet_length(TransientSet *self) {
+    TransientSet_ensure_editable(self);
+    if (PyErr_Occurred()) return -1;
     return self->cnt;
 }
 
@@ -8735,7 +8751,8 @@ static PyObject *SortedVector_last(SortedVector *self, PyObject *Py_UNUSED(ignor
 }
 
 // Binary search for a value, returns index or -1 if not found
-static Py_ssize_t RBNode_index_of(RBNode *node, PyObject *sort_key, int reverse, Py_ssize_t offset) {
+static Py_ssize_t RBNode_index_of(RBNode *node, PyObject *sort_key, PyObject *value,
+                                      int reverse, Py_ssize_t offset) {
     if (!node) return -1;
 
     int cmp = SortedVector_compare_keys(sort_key, node->sort_key, reverse);
@@ -8744,15 +8761,25 @@ static Py_ssize_t RBNode_index_of(RBNode *node, PyObject *sort_key, int reverse,
     Py_ssize_t left_size = RBNode_size(node->left);
 
     if (cmp < 0) {
-        return RBNode_index_of(node->left, sort_key, reverse, offset);
+        return RBNode_index_of(node->left, sort_key, value, reverse, offset);
     } else if (cmp > 0) {
-        return RBNode_index_of(node->right, sort_key, reverse, offset + left_size + 1);
+        return RBNode_index_of(node->right, sort_key, value, reverse,
+                               offset + left_size + 1);
     } else {
-        // Found a match - but check left subtree for earlier occurrence
-        Py_ssize_t left_result = RBNode_index_of(node->left, sort_key, reverse, offset);
+        // Equal sort keys can belong to unequal values. Rotations may place
+        // them on either side, so search the whole equal-key range and return
+        // the first exact value match.
+        Py_ssize_t left_result = RBNode_index_of(node->left, sort_key, value,
+                                                  reverse, offset);
         if (left_result == -2) return -2;  // Error
         if (left_result >= 0) return left_result;
-        return offset + left_size;
+
+        int eq = PyObject_RichCompareBool(value, node->value, Py_EQ);
+        if (eq < 0) return -2;
+        if (eq) return offset + left_size;
+
+        return RBNode_index_of(node->right, sort_key, value, reverse,
+                               offset + left_size + 1);
     }
 }
 
@@ -8760,7 +8787,8 @@ static PyObject *SortedVector_index_of(SortedVector *self, PyObject *value) {
     PyObject *sort_key = SortedVector_get_sort_key(self, value);
     if (!sort_key) return NULL;
 
-    Py_ssize_t index = RBNode_index_of(self->root, sort_key, self->reverse, 0);
+    Py_ssize_t index = RBNode_index_of(self->root, sort_key, value,
+                                       self->reverse, 0);
     Py_DECREF(sort_key);
 
     if (index == -2) return NULL;  // Error occurred
@@ -9101,10 +9129,14 @@ static RBNode *RBNode_delete_min(RBNode *h, PyObject *edit) {
     RBNode *new_h = RBNode_ensure_editable(h, edit);
     if (!new_h) return NULL;
 
-    // Now check if this is the min node (no left child)
+    // Now check if this is the min node (no left child). Equal-key
+    // duplicates can give the minimum node a right subtree, which must be
+    // retained when the node is removed.
     if (!new_h->left) {
+        RBNode *replacement = new_h->right;
+        Py_XINCREF(replacement);
         Py_DECREF(new_h);
-        return NULL;
+        return replacement;
     }
 
     if (!RBNode_is_red(new_h->left) && !RBNode_is_red(new_h->left->left)) {
@@ -9132,6 +9164,19 @@ static RBNode *RBNode_delete(RBNode *h, PyObject *sort_key, PyObject *value, int
 
     int cmp = SortedVector_compare_keys(sort_key, h->sort_key, reverse);
     if (cmp == -2) return NULL;  // Error
+
+    if (cmp == 0) {
+        // Values with equal sort keys may appear on either side after tree
+        // rotations. Choose the subtree containing the exact value rather
+        // than assuming every equal-key value is interchangeable.
+        int eq = PyObject_RichCompareBool(value, h->value, Py_EQ);
+        if (eq < 0) return NULL;
+        if (!eq) {
+            int in_left = RBNode_contains(h->left, sort_key, value, reverse);
+            if (in_left < 0) return NULL;
+            cmp = in_left ? -1 : 1;
+        }
+    }
 
     RBNode *new_h = RBNode_ensure_editable(h, edit);
     if (!new_h) return NULL;
@@ -9164,9 +9209,20 @@ static RBNode *RBNode_delete(RBNode *h, PyObject *sort_key, PyObject *value, int
         int key_eq = (SortedVector_compare_keys(sort_key, new_h->sort_key, reverse) == 0);
 
         if (key_eq && eq && !new_h->right) {
+            // Equal-key duplicates can be rotated into the left subtree. Keep
+            // that subtree when removing this node instead of dropping every
+            // duplicate along with it.
+            RBNode *replacement = NULL;
+            if (new_h->left) {
+                replacement = RBNode_ensure_editable(new_h->left, edit);
+                if (!replacement) {
+                    Py_DECREF(new_h);
+                    return NULL;
+                }
+            }
             *deleted = 1;
             Py_DECREF(new_h);
-            return NULL;
+            return replacement;
         }
 
         if (new_h->right && !RBNode_is_red(new_h->right) && !RBNode_is_red(new_h->right->left)) {
@@ -9372,7 +9428,9 @@ static PyObject *TransientSortedVector_conj_mut(TransientSortedVector *self, PyO
     PyObject *sort_key = TransientSortedVector_get_sort_key(self, value);
     if (!sort_key) return NULL;
 
-    RBNode *new_root = RBNode_insert(self->root, value, sort_key, self->reverse, self->id);
+    // Keep each intermediate root isolated. In-place red-black rotations can
+    // otherwise alias equal-key subtrees across repeated transient edits.
+    RBNode *new_root = RBNode_insert(self->root, value, sort_key, self->reverse, NULL);
     Py_DECREF(sort_key);
 
     if (!new_root && PyErr_Occurred()) return NULL;
@@ -9403,7 +9461,9 @@ static PyObject *TransientSortedVector_disj_mut(TransientSortedVector *self, PyO
     if (!sort_key) return NULL;
 
     int deleted = 0;
-    RBNode *new_root = RBNode_delete(self->root, sort_key, value, self->reverse, &deleted, self->id);
+    // Use the persistent copy-on-write path so repeated deletes cannot alias
+    // equal-key subtrees within the editable tree.
+    RBNode *new_root = RBNode_delete(self->root, sort_key, value, self->reverse, &deleted, NULL);
     Py_DECREF(sort_key);
 
     if (self->root && !new_root && PyErr_Occurred()) return NULL;
@@ -9444,6 +9504,8 @@ static PyObject *TransientSortedVector_persistent(TransientSortedVector *self, P
 }
 
 static Py_ssize_t TransientSortedVector_length(TransientSortedVector *self) {
+    TransientSortedVector_ensure_editable(self);
+    if (PyErr_Occurred()) return -1;
     return self->cnt;
 }
 

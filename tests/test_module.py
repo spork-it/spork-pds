@@ -1,5 +1,8 @@
 from collections.abc import Mapping, MutableMapping, MutableSequence, MutableSet
 from collections.abc import Sequence, Set as AbstractSet
+from typing import get_args, get_origin
+
+import pytest
 
 import spork_pds as pds
 
@@ -75,3 +78,34 @@ def test_collections_abc_registration():
     assert isinstance(pds.vec().transient(), MutableSequence)
     assert isinstance(pds.hash_map().transient(), MutableMapping)
     assert isinstance(pds.hash_set().transient(), MutableSet)
+
+
+def test_persistent_types_support_generic_aliases():
+    aliases = [
+        (pds.Cons[int], pds.Cons, (int,)),
+        (pds.Vector[str], pds.Vector, (str,)),
+        (pds.DoubleVector[float], pds.DoubleVector, (float,)),
+        (pds.IntVector[int], pds.IntVector, (int,)),
+        (pds.Map[str, int], pds.Map, (str, int)),
+        (pds.Set[str], pds.Set, (str,)),
+        (pds.SortedVector[int], pds.SortedVector, (int,)),
+    ]
+
+    for alias, origin, args in aliases:
+        assert get_origin(alias) is origin
+        assert get_args(alias) == args
+
+
+def test_transient_types_cannot_be_constructed_directly():
+    transient_types = [
+        pds.TransientVector,
+        pds.TransientDoubleVector,
+        pds.TransientIntVector,
+        pds.TransientMap,
+        pds.TransientSet,
+        pds.TransientSortedVector,
+    ]
+
+    for transient_type in transient_types:
+        with pytest.raises(TypeError):
+            transient_type()

@@ -2,6 +2,14 @@
 
 All notable changes to `spork-pds` will be documented here.
 
+## 0.1.1
+
+- Expand API, boundary, collision, transient lifecycle, and model-based test coverage.
+- Fix `SortedVector` queries and removals for duplicate and equal sort keys.
+- Prevent repeated transient sorted-vector edits from corrupting shared tree structure.
+- Reject unsupported keyword arguments in typed-vector constructors.
+- Enforce transient invalidation for length checks.
+
 ## 0.1.0
 
 - Extract the persistent data structure extension from `spork-lang`.
