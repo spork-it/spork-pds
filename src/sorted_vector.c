@@ -581,6 +581,7 @@ typedef struct SortedVectorIterator {
     RBNode **stack;
     Py_ssize_t stack_size;
     Py_ssize_t stack_capacity;
+    int busy;
 } SortedVectorIterator;
 
 PyTypeObject SortedVectorIteratorType;
@@ -631,7 +632,7 @@ static int SortedVectorIterator_push_left(
     return 0;
 }
 
-static PyObject *SortedVectorIterator_next(SortedVectorIterator *self) {
+static PyObject *SortedVectorIterator_next_impl(SortedVectorIterator *self) {
     if (self->stack_size == 0) {
         return NULL;  // StopIteration
     }
@@ -649,6 +650,22 @@ static PyObject *SortedVectorIterator_next(SortedVectorIterator *self) {
 
     Py_DECREF(node);
     return value;
+}
+
+static PyObject *SortedVectorIterator_next(SortedVectorIterator *self) {
+    PyObject *result = NULL;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->busy) {
+        PyErr_SetString(PyExc_RuntimeError, PDS_ITERATOR_BUSY_ERROR);
+    } else {
+        self->busy = 1;
+        result = SortedVectorIterator_next_impl(self);
+        self->busy = 0;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    return result;
 }
 
 PyTypeObject SortedVectorIteratorType = {
@@ -671,6 +688,7 @@ static PyObject *SortedVector_iter(SortedVector *self) {
             &SortedVectorIteratorType, 0);
     if (!iter) return NULL;
 
+    iter->busy = 0;
     // Initial capacity based on expected tree depth
     iter->stack_capacity = 32;
     iter->stack = PyMem_Malloc(iter->stack_capacity * sizeof(RBNode *));
@@ -1124,6 +1142,7 @@ typedef struct TransientSortedVector {
     PyObject *key_fn;
     int reverse;
     PyObject *id;  // Edit token
+    uint64_t owner_thread_id;
 } TransientSortedVector;
 
 PyTypeObject TransientSortedVectorType;
@@ -1150,6 +1169,9 @@ static void TransientSortedVector_dealloc(TransientSortedVector *self) {
 }
 
 static void TransientSortedVector_ensure_editable(TransientSortedVector *self) {
+    if (pds_check_transient_owner(self->owner_thread_id) < 0) {
+        return;
+    }
     if (!self->id) {
         PyErr_SetString(PyExc_RuntimeError, "TransientSortedVector already made persistent");
     }
@@ -1161,6 +1183,7 @@ static PyObject *SortedVector_transient(SortedVector *self, PyObject *Py_UNUSED(
             &TransientSortedVectorType, 0);
     if (!t) return NULL;
 
+    t->owner_thread_id = pds_current_thread_state_id();
     t->id = PyObject_New(PyObject, &PdsSentinelType);
     if (!t->id) {
         Py_DECREF(t);

@@ -98,7 +98,7 @@ persistent value → transient builder → persistent result
 
 Calling `persistent()` removes editability and invalidates the transient. Subsequent reads as well as writes raise `RuntimeError`. This strict boundary prevents mutable state from leaking into a published persistent value.
 
-Transients are local, single-owner builders. They are not designed for long-lived mutation, version history, or sharing among threads. The general vector, map, and set transients implement Python mutable collection ABCs; typed and sorted transients expose smaller operation sets.
+Transients are local, single-owner builders. They are not designed for long-lived mutation, version history, or sharing among threads. On a free-threaded build, every transient is confined to its creating Python thread; a wrong-thread operation raises `RuntimeError` before mutable state is accessed. Different transients, including builders created from the same persistent source, may run in parallel because edit tokens preserve copy-on-write isolation. The general vector, map, and set transients implement Python mutable collection ABCs; typed and sorted transients expose smaller operation sets.
 
 Persistent binary operators use transients internally where useful to construct one result efficiently. Neither operand is mutated.
 
@@ -139,9 +139,13 @@ Pickle stores values and ordering configuration, not a promise about trie shape 
 
 ## Free-threaded CPython
 
-The extension can be imported by free-threaded CPython 3.14 builds, but it requests CPython's compatibility GIL. Internal nodes are structurally shared, while transient builders and lazy caches still rely on GIL serialization.
+The extension declares `Py_MOD_GIL_NOT_USED` on CPython 3.13 and newer, so importing it in a free-threaded CPython 3.14t process leaves the GIL disabled.
 
-This means the package is compatible with free-threaded builds but does not currently provide parallel execution within extension operations. Arbitrary nested Python objects retain their own synchronization requirements, and each transient should remain under one owner's control.
+Persistent collections are immutable after publication and may be shared between threads. Lazy hash and typed-buffer caches use short object critical sections for publication, while persistent reads and structural updates continue to operate on immutable nodes. Iterator cursor advancement is synchronized; a reentrant or suspended-section contender may receive `RuntimeError` rather than corrupt cursor state.
+
+Different transient builders may execute in parallel. Each transient is confined to its creating Python thread on free-threaded builds, and cross-thread access is rejected before mutable state is touched. Objects stored inside a collection retain their own synchronization requirements; collection-level safety does not make an arbitrary nested Python object thread-safe.
+
+See [Native Free-Threading Support](FREE_THREADING.md) for the stress, sanitizer, performance, and distribution validation used for release claims.
 
 ## Subinterpreters
 

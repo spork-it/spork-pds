@@ -479,8 +479,18 @@ static PyObject *DoubleVector_repr(DoubleVector *self) {
 }
 
 static Py_hash_t DoubleVector_hash(DoubleVector *self) {
-    if (self->hash_computed) {
-        return self->hash;
+    Py_hash_t cached_hash = 0;
+    int hash_computed;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    hash_computed = self->hash_computed;
+    if (hash_computed) {
+        cached_hash = self->hash;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    if (hash_computed) {
+        return cached_hash;
     }
 
     Py_uhash_t h = 0;
@@ -494,15 +504,25 @@ static Py_hash_t DoubleVector_hash(DoubleVector *self) {
         h = (Py_uhash_t)31 * h + (Py_uhash_t)item_hash;
     }
 
-    self->hash = pds_finalize_hash(h);
-    self->hash_computed = 1;
-    return self->hash;
+    Py_hash_t computed_hash = pds_finalize_hash(h);
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (!self->hash_computed) {
+        self->hash = computed_hash;
+        self->hash_computed = 1;
+    }
+    cached_hash = self->hash;
+    PDS_END_CRITICAL_SECTION();
+    return cached_hash;
 }
 
 // Buffer Protocol Implementation for DoubleVector
 static int DoubleVector_flatten(DoubleVector *self) {
-    /* The compatibility GIL serializes initialization of this lazy cache. */
-    if (self->flat_buffer_cache != NULL) {
+    int cache_initialized;
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    cache_initialized = self->flat_buffer_cache != NULL;
+    PDS_END_CRITICAL_SECTION();
+
+    if (cache_initialized) {
         return 0;
     }
 
@@ -525,7 +545,13 @@ static int DoubleVector_flatten(DoubleVector *self) {
         }
     }
 
-    self->flat_buffer_cache = buffer;
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->flat_buffer_cache == NULL) {
+        self->flat_buffer_cache = buffer;
+        buffer = NULL;
+    }
+    PDS_END_CRITICAL_SECTION();
+    free(buffer);
     return 0;
 }
 
@@ -581,6 +607,7 @@ typedef struct {
     PyObject_HEAD
     DoubleVector *vec;
     Py_ssize_t index;
+    int busy;
 } DoubleVectorIterator;
 
 PyTypeObject DoubleVectorIteratorType;
@@ -590,7 +617,7 @@ static void DoubleVectorIterator_dealloc(DoubleVectorIterator *self) {
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static PyObject *DoubleVectorIterator_next(DoubleVectorIterator *self) {
+static PyObject *DoubleVectorIterator_next_impl(DoubleVectorIterator *self) {
     if (self->index >= self->vec->cnt) {
         return NULL;  // StopIteration
     }
@@ -599,6 +626,22 @@ static PyObject *DoubleVectorIterator_next(DoubleVectorIterator *self) {
     if (PyErr_Occurred()) return NULL;
     self->index++;
     return PyFloat_FromDouble(val);
+}
+
+static PyObject *DoubleVectorIterator_next(DoubleVectorIterator *self) {
+    PyObject *result = NULL;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->busy) {
+        PyErr_SetString(PyExc_RuntimeError, PDS_ITERATOR_BUSY_ERROR);
+    } else {
+        self->busy = 1;
+        result = DoubleVectorIterator_next_impl(self);
+        self->busy = 0;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    return result;
 }
 
 PyTypeObject DoubleVectorIteratorType = {
@@ -619,6 +662,7 @@ static PyObject *DoubleVector_iter(DoubleVector *self) {
     it->vec = self;
     Py_INCREF(self);
     it->index = 0;
+    it->busy = 0;
     return (PyObject *)it;
 }
 
@@ -632,6 +676,7 @@ typedef struct TransientDoubleVector {
     Py_ssize_t tail_len;
     Py_ssize_t tail_cap;
     PyObject *id;
+    uint64_t owner_thread_id;
 } TransientDoubleVector;
 
 PyTypeObject TransientDoubleVectorType;
@@ -644,6 +689,9 @@ static void TransientDoubleVector_dealloc(TransientDoubleVector *self) {
 }
 
 static void TransientDoubleVector_ensure_editable(TransientDoubleVector *self) {
+    if (pds_check_transient_owner(self->owner_thread_id) < 0) {
+        return;
+    }
     if (self->id == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Transient used after persistent() call");
     }
@@ -711,7 +759,10 @@ static DoubleVectorNode *TransientDoubleVector_push_tail(TransientDoubleVector *
     return ret;
 }
 
-// Internal function that takes a raw double value directly (no boxing overhead)
+/*
+ * Factory-only raw append.  The caller owns an unpublished, owner-initialized
+ * transient, so the Python-visible owner/editability check is not repeated.
+ */
 static int TransientDoubleVector_conj_mut_raw(TransientDoubleVector *self, double dval) {
     // Room in tail?
     if (self->cnt - TransientDoubleVector_tail_off(self) < WIDTH) {
@@ -900,6 +951,7 @@ static PyObject *DoubleVector_transient(DoubleVector *self, PyObject *Py_UNUSED(
             &TransientDoubleVectorType, 0);
     if (!t) return NULL;
 
+    t->owner_thread_id = pds_current_thread_state_id();
     t->id = PyObject_New(PyObject, &PdsSentinelType);
     if (!t->id) {
         Py_DECREF(t);

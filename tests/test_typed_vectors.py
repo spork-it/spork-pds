@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
 import pickle
+from threading import Barrier
 
 import pytest
 
@@ -179,6 +181,47 @@ def test_typed_vector_partial_construction_is_safe(vector_type):
 
     with pytest.raises(RuntimeError, match="iteration failed"):
         vector_type(failing_values())
+
+
+@pytest.mark.parametrize(
+    ("vector_type", "convert", "expected_format"),
+    [(DoubleVector, float, "d"), (IntVector, int, "q")],
+)
+def test_concurrent_first_and_repeated_buffer_publication(
+    vector_type, convert, expected_format
+):
+    expected = [convert(value) for value in range(2048)]
+    value = vector_type(expected)
+    worker_count = 8
+    rounds = 20
+    barrier = Barrier(worker_count)
+
+    def create_views(_worker_id):
+        views = []
+        for _ in range(rounds):
+            barrier.wait(timeout=10)
+            view = memoryview(value)
+            assert view.obj is value
+            assert view.format == expected_format
+            assert view.readonly
+            assert view[0] == expected[0]
+            assert view[-1] == expected[-1]
+            views.append(view)
+        return views
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        worker_views = list(executor.map(create_views, range(worker_count)))
+
+    views = [view for result in worker_views for view in result]
+    for view in views:
+        assert view.tolist() == expected
+
+    repeated_view = memoryview(value)
+    assert repeated_view.tolist() == expected
+
+    for view in views:
+        view.release()
+    repeated_view.release()
 
 
 def test_empty_typed_vector_buffers_and_read_only_enforcement():

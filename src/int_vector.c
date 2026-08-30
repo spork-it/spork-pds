@@ -468,8 +468,18 @@ static PyObject *IntVector_repr(IntVector *self) {
 }
 
 static Py_hash_t IntVector_hash(IntVector *self) {
-    if (self->hash_computed) {
-        return self->hash;
+    Py_hash_t cached_hash = 0;
+    int hash_computed;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    hash_computed = self->hash_computed;
+    if (hash_computed) {
+        cached_hash = self->hash;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    if (hash_computed) {
+        return cached_hash;
     }
 
     Py_uhash_t h = 0;
@@ -480,15 +490,25 @@ static Py_hash_t IntVector_hash(IntVector *self) {
         h = (Py_uhash_t)31 * h + (Py_uhash_t)item_hash;
     }
 
-    self->hash = pds_finalize_hash(h);
-    self->hash_computed = 1;
-    return self->hash;
+    Py_hash_t computed_hash = pds_finalize_hash(h);
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (!self->hash_computed) {
+        self->hash = computed_hash;
+        self->hash_computed = 1;
+    }
+    cached_hash = self->hash;
+    PDS_END_CRITICAL_SECTION();
+    return cached_hash;
 }
 
 // Buffer Protocol for IntVector
 static int IntVector_flatten(IntVector *self) {
-    /* The compatibility GIL serializes initialization of this lazy cache. */
-    if (self->flat_buffer_cache != NULL) {
+    int cache_initialized;
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    cache_initialized = self->flat_buffer_cache != NULL;
+    PDS_END_CRITICAL_SECTION();
+
+    if (cache_initialized) {
         return 0;
     }
 
@@ -510,7 +530,13 @@ static int IntVector_flatten(IntVector *self) {
         }
     }
 
-    self->flat_buffer_cache = buffer;
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->flat_buffer_cache == NULL) {
+        self->flat_buffer_cache = buffer;
+        buffer = NULL;
+    }
+    PDS_END_CRITICAL_SECTION();
+    free(buffer);
     return 0;
 }
 
@@ -565,6 +591,7 @@ typedef struct {
     PyObject_HEAD
     IntVector *vec;
     Py_ssize_t index;
+    int busy;
 } IntVectorIterator;
 
 PyTypeObject IntVectorIteratorType;
@@ -574,7 +601,7 @@ static void IntVectorIterator_dealloc(IntVectorIterator *self) {
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static PyObject *IntVectorIterator_next(IntVectorIterator *self) {
+static PyObject *IntVectorIterator_next_impl(IntVectorIterator *self) {
     if (self->index >= self->vec->cnt) {
         return NULL;
     }
@@ -583,6 +610,22 @@ static PyObject *IntVectorIterator_next(IntVectorIterator *self) {
     if (PyErr_Occurred()) return NULL;
     self->index++;
     return PyLong_FromLongLong(val);
+}
+
+static PyObject *IntVectorIterator_next(IntVectorIterator *self) {
+    PyObject *result = NULL;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->busy) {
+        PyErr_SetString(PyExc_RuntimeError, PDS_ITERATOR_BUSY_ERROR);
+    } else {
+        self->busy = 1;
+        result = IntVectorIterator_next_impl(self);
+        self->busy = 0;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    return result;
 }
 
 PyTypeObject IntVectorIteratorType = {
@@ -602,6 +645,7 @@ static PyObject *IntVector_iter(IntVector *self) {
     it->vec = self;
     Py_INCREF(self);
     it->index = 0;
+    it->busy = 0;
     return (PyObject *)it;
 }
 
@@ -615,6 +659,7 @@ typedef struct TransientIntVector {
     Py_ssize_t tail_len;
     Py_ssize_t tail_cap;
     PyObject *id;
+    uint64_t owner_thread_id;
 } TransientIntVector;
 
 PyTypeObject TransientIntVectorType;
@@ -627,6 +672,9 @@ static void TransientIntVector_dealloc(TransientIntVector *self) {
 }
 
 static void TransientIntVector_ensure_editable(TransientIntVector *self) {
+    if (pds_check_transient_owner(self->owner_thread_id) < 0) {
+        return;
+    }
     if (self->id == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Transient used after persistent() call");
     }
@@ -694,7 +742,10 @@ static IntVectorNode *TransientIntVector_push_tail(TransientIntVector *self, int
     return ret;
 }
 
-// Internal function that takes a raw int64_t value directly (no boxing overhead)
+/*
+ * Factory-only raw append.  The caller owns an unpublished, owner-initialized
+ * transient, so the Python-visible owner/editability check is not repeated.
+ */
 static int TransientIntVector_conj_mut_raw(TransientIntVector *self, int64_t lval) {
     // Room in tail?
     if (self->cnt - TransientIntVector_tail_off(self) < WIDTH) {
@@ -883,6 +934,7 @@ static PyObject *IntVector_transient(IntVector *self, PyObject *Py_UNUSED(ignore
             &TransientIntVectorType, 0);
     if (!t) return NULL;
 
+    t->owner_thread_id = pds_current_thread_state_id();
     t->id = PyObject_New(PyObject, &PdsSentinelType);
     if (!t->id) {
         Py_DECREF(t);

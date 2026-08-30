@@ -15,6 +15,20 @@ typedef struct {
     PyObject *EMPTY_BIN;
 } PdsState;
 
+/*
+ * Process-global singleton publication is serialized without an extension
+ * lock. CPython 3.13 and 3.14 hold the per-name import lock while executing a
+ * multi-phase module in the main interpreter. The multiple-interpreters slot
+ * below rejects isolated and own-GIL subinterpreters; the legacy bypass used
+ * by supported older/shared-GIL configurations serializes execution with that
+ * shared GIL. Thus no supported execution path calls pds_exec concurrently.
+ *
+ * Static types are readied under the same serialization before publication.
+ * The global aliases are assigned exactly once, retain process-lifetime
+ * references, and are never changed. On a free-threaded build the singleton
+ * objects are also made immortal before publication. Keep this proof in sync
+ * with the module slots and singleton initialization below.
+ */
 static int _singletons_initialized = 0;
 
 static inline PdsState *
@@ -106,10 +120,9 @@ static PyModuleDef_Slot pds_slots[] = {
     /* Static types and process-wide empty singletons are not interpreter-local. */
     {Py_mod_multiple_interpreters, Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED},
 #endif
-    /*
-     * Do not declare Py_MOD_GIL_NOT_USED. Mutable transients and lazy caches
-     * currently rely on CPython's compatibility GIL for synchronization.
-     */
+#if PY_VERSION_HEX >= 0x030D0000
+    {Py_mod_gil, Py_MOD_GIL_NOT_USED},
+#endif
     {0, NULL}
 };
 

@@ -35,7 +35,7 @@ jobs:
           - os: windows-latest
             arch: x86_64
             cibw_archs: AMD64
-          - os: windows-latest
+          - os: windows-11-arm
             arch: arm64
             cibw_archs: ARM64
 
@@ -46,6 +46,7 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+          architecture: ${{ matrix.arch == 'arm64' && 'arm64' || 'x64' }}
 
       - name: Install cibuildwheel
         run: python -m pip install cibuildwheel==3.3.0
@@ -59,8 +60,13 @@ jobs:
           CIBW_SKIP: "*-musllinux_*"
           CIBW_BUILD_VERBOSITY: 1
           CIBW_TEST_COMMAND: >-
-            python -c "import spork.pds as p;
-            assert list(p.vec(1, 2, 3).conj(4)) == [1, 2, 3, 4]"
+            python -W error::RuntimeWarning
+            {project}/tools/smoke_installed_distribution.py
+
+      - name: Verify regular and free-threaded wheel tags
+        run: >-
+          python tools/verify_distributions.py wheelhouse
+          --require-regular --require-cp314t
 
       - name: Upload wheels
         uses: actions/upload-artifact@v6
@@ -86,15 +92,50 @@ jobs:
       - name: Build sdist
         run: python -m build --sdist
 
+      - name: Verify and smoke-test sdist
+        run: |
+          python tools/verify_distributions.py dist --require-sdist
+          python -m venv "${{ runner.temp }}/sdist-smoke"
+          "${{ runner.temp }}/sdist-smoke/bin/python" -m pip install dist/*.tar.gz
+          cd "${{ runner.temp }}"
+          ./sdist-smoke/bin/python "$GITHUB_WORKSPACE/tools/smoke_installed_distribution.py"
+
       - name: Upload sdist
         uses: actions/upload-artifact@v6
         with:
           name: sdist
           path: ./dist/*.tar.gz
 
+  verify_distributions:
+    name: Verify release distributions
+    needs: [build_wheels, build_sdist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install verification dependencies
+        run: python -m pip install twine
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Check metadata and ABI-separated artifacts
+        run: |
+          python -m twine check dist/*
+          python tools/verify_distributions.py dist \
+            --require-regular --require-cp314t --require-sdist
+
   publish:
     name: Publish to PyPI
-    needs: [build_wheels, build_sdist]
+    needs: verify_distributions
     runs-on: ubuntu-latest
 
     environment:
@@ -115,7 +156,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [build_wheels, build_sdist]
+    needs: verify_distributions
     runs-on: ubuntu-latest
     permissions:
       contents: write

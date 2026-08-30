@@ -692,8 +692,18 @@ static PyObject *Vector_multiply(PyObject *left, PyObject *right) {
 }
 
 static Py_hash_t Vector_hash(Vector *self) {
-    if (self->hash_computed) {
-        return self->hash;
+    Py_hash_t cached_hash = 0;
+    int hash_computed;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    hash_computed = self->hash_computed;
+    if (hash_computed) {
+        cached_hash = self->hash;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    if (hash_computed) {
+        return cached_hash;
     }
 
     Py_uhash_t h = 0;
@@ -709,9 +719,15 @@ static Py_hash_t Vector_hash(Vector *self) {
         h = (Py_uhash_t)31 * h + (Py_uhash_t)item_hash;
     }
 
-    self->hash = pds_finalize_hash(h);
-    self->hash_computed = 1;
-    return self->hash;
+    Py_hash_t computed_hash = pds_finalize_hash(h);
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (!self->hash_computed) {
+        self->hash = computed_hash;
+        self->hash_computed = 1;
+    }
+    cached_hash = self->hash;
+    PDS_END_CRITICAL_SECTION();
+    return cached_hash;
 }
 
 static PyObject *Vector_richcompare(Vector *self, PyObject *other, int op) {
@@ -1036,6 +1052,7 @@ typedef struct {
     VectorNode *cached_node;   // Cached tree node (NULL if in tail)
     Py_ssize_t cached_chunk;   // Which chunk is cached (chunk_start index)
     int cached_is_tail;        // Whether cached chunk is the tail
+    int busy;
 } VectorIterator;
 
 PyTypeObject VectorIteratorType;
@@ -1058,7 +1075,7 @@ static void VectorIterator_dealloc(VectorIterator *self) {
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static PyObject *VectorIterator_next(VectorIterator *self) {
+static PyObject *VectorIterator_next_impl(VectorIterator *self) {
     if (self->vec == NULL || self->index >= self->vec->cnt) {
         return NULL;
     }
@@ -1066,10 +1083,15 @@ static PyObject *VectorIterator_next(VectorIterator *self) {
     // Check if we need to fetch a new chunk
     Py_ssize_t chunk_start = (self->index >> BITS) << BITS;
     if (chunk_start != self->cached_chunk) {
-        Py_XDECREF(self->cached_node);
-        self->cached_node = Vector_node_for(self->vec, self->index, &self->cached_is_tail);
-        Py_XINCREF(self->cached_node);
+        int is_tail;
+        VectorNode *new_node = Vector_node_for(self->vec, self->index, &is_tail);
+        Py_XINCREF(new_node);
+
+        VectorNode *old_node = self->cached_node;
+        self->cached_node = new_node;
+        self->cached_is_tail = is_tail;
         self->cached_chunk = chunk_start;
+        Py_XDECREF(old_node);
     }
 
     PyObject *result;
@@ -1082,6 +1104,22 @@ static PyObject *VectorIterator_next(VectorIterator *self) {
     Py_INCREF(result);
 
     self->index++;
+    return result;
+}
+
+static PyObject *VectorIterator_next(VectorIterator *self) {
+    PyObject *result = NULL;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->busy) {
+        PyErr_SetString(PyExc_RuntimeError, PDS_ITERATOR_BUSY_ERROR);
+    } else {
+        self->busy = 1;
+        result = VectorIterator_next_impl(self);
+        self->busy = 0;
+    }
+    PDS_END_CRITICAL_SECTION();
+
     return result;
 }
 
@@ -1110,6 +1148,7 @@ static PyObject *Vector_iter(Vector *self) {
     it->cached_node = NULL;
     it->cached_chunk = -1;  // Invalid chunk to force initial fetch
     it->cached_is_tail = 0;
+    it->busy = 0;
     return (PyObject *)it;
 }
 
@@ -1199,6 +1238,7 @@ typedef struct TransientVector {
     VectorNode *root;
     PyObject *tail;  // list
     PyObject *id;
+    uint64_t owner_thread_id;
 } TransientVector;
 
 static int TransientVector_traverse(TransientVector *self, visitproc visit, void *arg) {
@@ -1226,6 +1266,7 @@ static PyObject *Vector_transient(Vector *self, PyObject *Py_UNUSED(ignored)) {
         &TransientVectorType, 0);
     if (!t) return NULL;
 
+    t->owner_thread_id = pds_current_thread_state_id();
     t->id = PyObject_New(PyObject, &PdsSentinelType);
     if (!t->id) {
         Py_DECREF(t);
@@ -1262,6 +1303,9 @@ static Py_ssize_t TransientVector_tail_off(TransientVector *self) {
 }
 
 static void TransientVector_ensure_editable(TransientVector *self) {
+    if (pds_check_transient_owner(self->owner_thread_id) < 0) {
+        return;
+    }
     if (self->id == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Transient used after persistent() call");
     }
@@ -1742,6 +1786,7 @@ typedef struct {
     PyObject_HEAD
     TransientVector *tvec;
     Py_ssize_t index;
+    int busy;
 } TransientVectorIterator;
 
 PyTypeObject TransientVectorIteratorType;
@@ -1763,21 +1808,44 @@ static void TransientVectorIterator_dealloc(TransientVectorIterator *self) {
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static PyObject *TransientVectorIterator_next(TransientVectorIterator *self) {
+static PyObject *TransientVectorIterator_next_impl(
+    TransientVectorIterator *self) {
     if (self->tvec == NULL) {
         return NULL;
     }
-    if (self->tvec->id == NULL) {
-        PyErr_SetString(PyExc_RuntimeError, "Transient used after persistent() call");
-        return NULL;
-    }
+    TransientVector_ensure_editable(self->tvec);
+    if (PyErr_Occurred()) return NULL;
 
     if (self->index >= self->tvec->cnt) {
         return NULL;  // StopIteration
     }
 
     PyObject *result = TransientVector_sq_item(self->tvec, self->index);
-    self->index++;
+    if (result != NULL) {
+        self->index++;
+    }
+    return result;
+}
+
+static PyObject *TransientVectorIterator_next(TransientVectorIterator *self) {
+    PyObject *result = NULL;
+
+    /* The referenced transient's immutable owner is checked before the cursor. */
+    if (self->tvec != NULL &&
+        pds_check_transient_owner(self->tvec->owner_thread_id) < 0) {
+        return NULL;
+    }
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->busy) {
+        PyErr_SetString(PyExc_RuntimeError, PDS_ITERATOR_BUSY_ERROR);
+    } else {
+        self->busy = 1;
+        result = TransientVectorIterator_next_impl(self);
+        self->busy = 0;
+    }
+    PDS_END_CRITICAL_SECTION();
+
     return result;
 }
 
@@ -1807,6 +1875,7 @@ static PyObject *TransientVector_iter(TransientVector *self) {
     it->tvec = self;
     Py_INCREF(self);
     it->index = 0;
+    it->busy = 0;
     return (PyObject *)it;
 }
 

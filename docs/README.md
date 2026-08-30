@@ -11,6 +11,7 @@
 | Choose a collection or follow common usage patterns | [Practical Guide](GUIDE.md) |
 | Look up constructors, operators, methods, or Python protocols | [API Reference](API.md) |
 | Understand structural sharing and operation costs | [Design and Complexity](DESIGN.md) |
+| Review the no-GIL contract and release validation | [Native Free-Threading Support](FREE_THREADING.md) |
 | Run, interpret, or extend the benchmark suite | [Benchmarks](BENCHMARKS.md) |
 | Review release changes | [Changelog](../CHANGELOG.md) |
 

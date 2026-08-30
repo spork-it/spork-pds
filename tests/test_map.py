@@ -1,9 +1,13 @@
+import gc
 import pickle
+import weakref
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from types import MappingProxyType
 
 import pytest
 
-from spork.pds import Map, hash_map
+from spork.pds import Map, Vector, hash_map
 
 
 class CollisionKey:
@@ -15,6 +19,50 @@ class CollisionKey:
 
     def __eq__(self, other):
         return isinstance(other, CollisionKey) and self.value == other.value
+
+
+class PairMapping:
+    def __init__(self, pair):
+        self.pair = pair
+
+    def items(self):
+        return iter((self.pair,))
+
+
+class PairValue:
+    pass
+
+
+class BlockingHashKey:
+    def __init__(self, started, resume):
+        self.started = started
+        self.resume = resume
+        self.block_once = True
+
+    def __hash__(self):
+        if self.block_once:
+            self.block_once = False
+            self.started.set()
+            if not self.resume.wait(timeout=10):
+                raise AssertionError("pair mutation did not resume hashing")
+        return 12345
+
+    def __eq__(self, other):
+        return self is other
+
+
+class FailingPair:
+    def __init__(self, first):
+        self.first = first
+
+    def __len__(self):
+        return 2
+
+    def __getitem__(self, index):
+        if index == 0:
+            return self.first
+        self.first = None
+        raise RuntimeError("pair access failed")
 
 
 def test_map_factory_and_mapping_protocols():
@@ -91,6 +139,59 @@ def test_map_persistent_operations_and_merge():
     assert rebound is not original
     assert "augmented" not in original
     assert original.copy() is original
+
+
+@pytest.mark.parametrize(
+    "make_pair",
+    [
+        lambda: ("pair", "tuple"),
+        lambda: ["pair", "list"],
+        lambda: Vector(["pair", "vector"]),
+    ],
+)
+def test_map_merge_accepts_supported_pair_sequences(make_pair):
+    pair = make_pair()
+    result = Map() | PairMapping(pair)
+    assert dict(result.items()) == {"pair": pair[1]}
+
+
+def test_map_merge_holds_strong_references_to_mutable_list_pairs():
+    started = Event()
+    resume = Event()
+    key = BlockingHashKey(started, resume)
+    value = PairValue()
+    value_ref = weakref.ref(value)
+    pair = [key, value]
+    del value
+
+    retained = None
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(lambda: Map() | PairMapping(pair))
+        try:
+            assert started.wait(timeout=10)
+            pair[:] = ["replacement", object()]
+            gc.collect()
+            retained = value_ref()
+        finally:
+            resume.set()
+        result = future.result(timeout=10)
+
+    assert retained is not None
+    assert result[key] is retained
+    assert dict(result.items()) == {key: retained}
+
+
+def test_map_pair_access_failure_releases_partial_strong_references():
+    value = PairValue()
+    value_ref = weakref.ref(value)
+    pair = FailingPair(value)
+    del value
+
+    with pytest.raises(RuntimeError, match="pair access failed"):
+        Map() | PairMapping(pair)
+
+    gc.collect()
+    assert value_ref() is None
 
 
 def test_map_handles_hash_collisions():

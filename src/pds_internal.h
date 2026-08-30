@@ -11,6 +11,94 @@
 #include <intrin.h>
 #endif
 
+/*
+ * Patch 4 direct-access audit (grep: PyList_*, PyTuple_*, PyDict_Next,
+ * PyDict_GET_SIZE, and mutable struct fields):
+ *
+ *   Accessed storage                  Classification / invariant
+ *   --------------------------------  ---------------------------------------
+ *   Vector tails and iterator pairs  immutable tuples
+ *   Function call positional args    immutable tuples
+ *   HAMT node lists                   immutable when persistent; editable
+ *                                     only for the exact transient token
+ *   TransientVector tail lists        owner-confined transient storage
+ *   Builder/result lists and tuples   fresh locals, not externally published
+ *   Function keyword dictionaries     private call-frame dictionaries
+ *   Externally supplied Map pairs     PySequence_GetItem strong references
+ *
+ * There are no PyDict_Next sites.  Persistent node/value fields are immutable
+ * after publication except synchronized caches; transient fields are accessed
+ * only after owner validation; iterator cursor fields are synchronized.
+ * Consequently direct macros remain only on immutable, private, or owner-
+ * confined storage.  Keep this table in sync with new direct accessor sites.
+ *
+ * HAMT copy-on-write proof: every mutation of an existing node list follows
+ * ensure_editable(); fresh unpublished lists are initialized directly.
+ * Editability requires a non-NULL token identical to the node token. Persistent
+ * operations pass NULL; each transient receives a fresh sentinel. Therefore a
+ * published persistent list and two transients from one source can never be
+ * writable aliases.
+ *
+ * Allocation-domain audit:
+ *   - Python objects use type allocators or PyObject_New and matching tp_free.
+ *   - Typed-vector raw tails/caches use malloc/realloc/free consistently.
+ *   - SortedVectorIterator stacks use PyMem_Malloc/Realloc/Free consistently.
+ *   - The extension has no direct PyObject_Malloc allocation.
+ */
+
+/*
+ * Object critical sections were added in CPython 3.13.  They lock the
+ * object's per-object mutex in free-threaded builds and are no-ops when the
+ * GIL is enabled.  Older supported CPython versions are always GIL-enabled,
+ * so use a lexical no-op there as well.
+ */
+#if PY_VERSION_HEX >= 0x030D0000
+#define PDS_BEGIN_CRITICAL_SECTION(op) Py_BEGIN_CRITICAL_SECTION(op)
+#define PDS_END_CRITICAL_SECTION() Py_END_CRITICAL_SECTION()
+#else
+#define PDS_BEGIN_CRITICAL_SECTION(op) { (void)(op)
+#define PDS_END_CRITICAL_SECTION() }
+#endif
+
+#define PDS_TRANSIENT_WRONG_THREAD_ERROR \
+    "Transient objects are confined to their creating thread"
+
+/*
+ * Iterator next wrappers hold the iterator's object critical section and use
+ * this error when a suspended or reentrant call encounters an active cursor.
+ * GC traversal is stop-the-world on free-threaded CPython; clear/deallocation
+ * only operate once the iterator is unreachable, so lifecycle hooks do not
+ * participate in cursor locking.
+ */
+#define PDS_ITERATOR_BUSY_ERROR "Iterator is already executing"
+
+/*
+ * Transients are single-owner builders.  PyThreadState IDs are stable for a
+ * thread state's lifetime and are available throughout our CPython 3.10+
+ * support window.  Keep the metadata on every build, but preserve historical
+ * regular-GIL behavior by enforcing it only in free-threaded builds.
+ */
+static inline uint64_t
+pds_current_thread_state_id(void)
+{
+    return PyThreadState_GetID(PyThreadState_Get());
+}
+
+static inline int
+pds_check_transient_owner(uint64_t owner_thread_id)
+{
+#ifdef Py_GIL_DISABLED
+    if (owner_thread_id != pds_current_thread_state_id()) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        PDS_TRANSIENT_WRONG_THREAD_ERROR);
+        return -1;
+    }
+#else
+    (void)owner_thread_id;
+#endif
+    return 0;
+}
+
 /* A free-threaded CPython object becomes immortal above UINT32_MAX. */
 #if PY_VERSION_HEX >= 0x030D0000 && defined(Py_GIL_DISABLED)
 #define PDS_SINGLETONS_ARE_IMMORTAL 1
@@ -207,6 +295,12 @@ PyObject *HashCollisionNode_dissoc(HashCollisionNode *self, int shift,
 PyObject *BitmapIndexedNode_iter_mode(BitmapIndexedNode *self, int mode);
 PyObject *ArrayNode_iter_mode(ArrayNode *self, int mode);
 PyObject *HashCollisionNode_iter_mode(HashCollisionNode *self, int mode);
+PyObject *BitmapIndexedNode_iter_mode_transient(
+    BitmapIndexedNode *self, int mode, uint64_t owner_thread_id);
+PyObject *ArrayNode_iter_mode_transient(
+    ArrayNode *self, int mode, uint64_t owner_thread_id);
+PyObject *HashCollisionNode_iter_mode_transient(
+    HashCollisionNode *self, int mode, uint64_t owner_thread_id);
 PyObject *BitmapIndexedNode_iter_kv(BitmapIndexedNode *self);
 PyObject *ArrayNode_iter_kv(ArrayNode *self);
 PyObject *HashCollisionNode_iter_kv(HashCollisionNode *self);

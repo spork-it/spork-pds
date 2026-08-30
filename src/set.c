@@ -228,6 +228,7 @@ static PyObject *Set_disj(Set *self, PyObject *key) {
 struct SetIterator {
     PyObject_HEAD
     PyObject *kv_iter;  // Underlying key-value iterator
+    int busy;
 };
 
 PyTypeObject SetIteratorType;
@@ -248,7 +249,7 @@ static void SetIterator_dealloc(SetIterator *self) {
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static PyObject *SetIterator_next(SetIterator *self) {
+static PyObject *SetIterator_next_impl(SetIterator *self) {
     if (!self->kv_iter) return NULL;
 
     PyObject *pair = PyIter_Next(self->kv_iter);
@@ -258,6 +259,22 @@ static PyObject *SetIterator_next(SetIterator *self) {
     Py_INCREF(key);
     Py_DECREF(pair);
     return key;
+}
+
+static PyObject *SetIterator_next(SetIterator *self) {
+    PyObject *result = NULL;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->busy) {
+        PyErr_SetString(PyExc_RuntimeError, PDS_ITERATOR_BUSY_ERROR);
+    } else {
+        self->busy = 1;
+        result = SetIterator_next_impl(self);
+        self->busy = 0;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    return result;
 }
 
 PyTypeObject SetIteratorType = {
@@ -298,6 +315,7 @@ static PyObject *Set_iter(Set *self) {
     }
 
     it->kv_iter = kv_iter;
+    it->busy = 0;
     return (PyObject *)it;
 }
 
@@ -711,8 +729,18 @@ static PyObject *Set_xor(PyObject *left, PyObject *right) {
 }
 
 static Py_hash_t Set_hash(Set *self) {
-    if (self->hash_computed) {
-        return self->hash;
+    Py_hash_t cached_hash = 0;
+    int hash_computed;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    hash_computed = self->hash_computed;
+    if (hash_computed) {
+        cached_hash = self->hash;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    if (hash_computed) {
+        return cached_hash;
     }
 
     // Use XOR of element hashes for order-independent hash
@@ -739,9 +767,14 @@ static Py_hash_t Set_hash(Set *self) {
     // Avoid returning -1 which signals error
     if (h == -1) h = -2;
 
-    self->hash = h;
-    self->hash_computed = 1;
-    return h;
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (!self->hash_computed) {
+        self->hash = h;
+        self->hash_computed = 1;
+    }
+    cached_hash = self->hash;
+    PDS_END_CRITICAL_SECTION();
+    return cached_hash;
 }
 
 static PyObject *Set_richcompare(Set *self, PyObject *other, int op) {
@@ -1133,6 +1166,7 @@ struct TransientSet {
     Py_ssize_t cnt;
     PyObject *root;
     PyObject *id;
+    uint64_t owner_thread_id;
 };
 
 static int TransientSet_traverse(
@@ -1159,6 +1193,7 @@ static PyObject *Set_transient(Set *self, PyObject *Py_UNUSED(ignored)) {
         &TransientSetType, 0);
     if (!t) return NULL;
 
+    t->owner_thread_id = pds_current_thread_state_id();
     t->id = PyObject_New(PyObject, &PdsSentinelType);
     if (!t->id) {
         Py_DECREF(t);
@@ -1186,6 +1221,9 @@ static PyObject *Set_transient(Set *self, PyObject *Py_UNUSED(ignored)) {
 }
 
 static void TransientSet_ensure_editable(TransientSet *self) {
+    if (pds_check_transient_owner(self->owner_thread_id) < 0) {
+        return;
+    }
     if (self->id == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Transient used after persistent() call");
     }
@@ -1350,17 +1388,22 @@ static PyObject *TransientSet_iter(TransientSet *self) {
     if (PyErr_Occurred()) return NULL;
 
     if (self->root == NULL) {
-        // Return empty iterator
-        return pds_empty_iterator();
+        return BitmapIndexedNode_iter_mode_transient(
+            EMPTY_BIN, ITER_MODE_KEYS, self->owner_thread_id);
     }
-
     if (PyObject_TypeCheck(self->root, &BitmapIndexedNodeType)) {
-        return BitmapIndexedNode_iter_mode((BitmapIndexedNode *)self->root, ITER_MODE_KEYS);
-    } else if (PyObject_TypeCheck(self->root, &ArrayNodeType)) {
-        return ArrayNode_iter_mode((ArrayNode *)self->root, ITER_MODE_KEYS);
-    } else {
-        return HashCollisionNode_iter_mode((HashCollisionNode *)self->root, ITER_MODE_KEYS);
+        return BitmapIndexedNode_iter_mode_transient(
+            (BitmapIndexedNode *)self->root, ITER_MODE_KEYS,
+            self->owner_thread_id);
     }
+    if (PyObject_TypeCheck(self->root, &ArrayNodeType)) {
+        return ArrayNode_iter_mode_transient(
+            (ArrayNode *)self->root, ITER_MODE_KEYS,
+            self->owner_thread_id);
+    }
+    return HashCollisionNode_iter_mode_transient(
+        (HashCollisionNode *)self->root, ITER_MODE_KEYS,
+        self->owner_thread_id);
 }
 
 // Python set methods: add, discard, remove, clear
@@ -1459,23 +1502,12 @@ PyObject *pds_set(PyObject *self, PyObject *args) {
     PyObject *iter = PyObject_GetIter(iterable);
     if (!iter) return NULL;
 
-    // Use transient for efficient building
-    TransientSet *t = (TransientSet *)TransientSetType.tp_alloc(
-        &TransientSetType, 0);
+    // Use an owner-initialized transient for efficient building.
+    TransientSet *t = (TransientSet *)Set_transient(EMPTY_SET, NULL);
     if (!t) {
         Py_DECREF(iter);
         return NULL;
     }
-
-    t->id = PyObject_New(PyObject, &PdsSentinelType);
-    if (!t->id) {
-        Py_DECREF(t);
-        Py_DECREF(iter);
-        return NULL;
-    }
-
-    t->cnt = 0;
-    t->root = NULL;
 
     PyObject *key;
     while ((key = PyIter_Next(iter)) != NULL) {
