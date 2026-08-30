@@ -209,15 +209,15 @@ jobs:
       - name: Build ThreadSanitizer-instrumented extension
         run: |
           tsan_python="${{ runner.temp }}/cpython-tsan/python"
-          python_config="${{ runner.temp }}/cpython-tsan/python-config"
+          cpython_build="${{ runner.temp }}/cpython-tsan"
           extension_suffix="$($tsan_python -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')"
-          clang -shared -fPIC $($tsan_python $python_config --cflags) \
+          clang -shared -fPIC \
+            -I"$GITHUB_WORKSPACE/.cpython/Include" -I"$cpython_build" \
             -O1 -g -fno-omit-frame-pointer -fsanitize=thread \
             src/common.c src/cons.c src/double_vector.c src/hamt.c \
             src/int_vector.c src/map.c src/module.c src/set.c \
             src/sorted_vector.c src/vector.c \
-            -o "spork_pds${extension_suffix}" \
-            $($tsan_python $python_config --ldflags) -fsanitize=thread
+            -o "spork_pds${extension_suffix}" -fsanitize=thread
 
       - name: Run no-GIL smoke and stress tests under ThreadSanitizer
         env:
