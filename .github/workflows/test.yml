@@ -60,16 +60,31 @@ jobs:
       - name: Print host info
         run: python tools/host_info.py
 
+      - name: Verify native no-GIL import
+        if: matrix.python-version == '3.14t'
+        env:
+          PYTHON_GIL: "0"
+        run: >-
+          python -m pytest -q
+          tests/test_module.py::test_free_threaded_import_keeps_the_gil_disabled
+
       - name: Verify public namespace and legacy extension load
+        env:
+          PYTHON_GIL: ${{ matrix.python-version == '3.14t' && '0' || '' }}
         run: python -c "import spork.pds, spork_pds; assert spork.pds.Vector is spork_pds.Vector"
 
       - name: Run tests
         env:
+          PYTHON_GIL: ${{ matrix.python-version == '3.14t' && '0' || '' }}
           PYTHONIOENCODING: utf-8
         run: python -m pytest
 
       - name: Run vector fuzz tests
-        if: runner.os == 'Linux' && matrix.python-version == '3.13'
+        if: >-
+          runner.os == 'Linux' &&
+          (matrix.python-version == '3.13' || matrix.python-version == '3.14t')
+        env:
+          PYTHON_GIL: ${{ matrix.python-version == '3.14t' && '0' || '' }}
         run: python -m tests.fuzzing --examples 1000 --steps 200
 
   docs:
@@ -99,5 +114,6 @@ jobs:
 
       - name: Verify documentation examples
         env:
+          PYTHON_GIL: ${{ matrix.python-version == '3.14t' && '0' || '' }}
           PYTHONIOENCODING: utf-8
         run: python tools/verify_docs.py

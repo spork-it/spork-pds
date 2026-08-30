@@ -2,6 +2,7 @@ from collections.abc import Mapping, MutableMapping, MutableSequence, MutableSet
 from collections.abc import Sequence, Set as AbstractSet
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+import os
 import subprocess
 import sys
 import sysconfig
@@ -108,7 +109,7 @@ def test_persistent_types_support_generic_aliases():
         assert get_args(alias) == args
 
 
-def test_concurrent_first_hash_publication():
+def test_concurrent_first_and_cached_hash_publication():
     cons_value = None
     for value in reversed(range(512)):
         cons_value = pds.cons(value, cons_value)
@@ -122,38 +123,61 @@ def test_concurrent_first_hash_publication():
         pds.IntVector(range(2048)),
     )
     worker_count = 8
-    barriers = [Barrier(worker_count) for _ in cached_values]
+    rounds = 20
+    barrier = Barrier(worker_count)
 
     def compute_hashes(_worker_id):
         results = []
-        for barrier, value in zip(barriers, cached_values, strict=True):
+        for _ in range(rounds):
             barrier.wait(timeout=10)
-            results.append(hash(value))
-        return tuple(results)
+            results.append(tuple(hash(value) for value in cached_values))
+        return results
 
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         results = list(executor.map(compute_hashes, range(worker_count)))
 
     assert results == [results[0]] * worker_count
-    assert tuple(hash(value) for value in cached_values) == results[0]
+    assert results[0] == [results[0][0]] * rounds
+    assert tuple(hash(value) for value in cached_values) == results[0][0]
 
 
-def test_concurrent_reads_and_independent_transients():
+def test_concurrent_reads_updates_and_independent_transients():
     vector = pds.Vector(range(100))
     mapping = pds.Map((index, index * 2) for index in range(100))
     set_value = pds.Set(range(100))
     sorted_value = pds.SortedVector(range(100))
     double_vector = pds.DoubleVector(range(100))
     int_vector = pds.IntVector(range(100))
+    equal_values = (
+        pds.Vector(range(100)),
+        pds.Map((index, index * 2) for index in range(100)),
+        pds.Set(range(100)),
+        pds.SortedVector(range(100)),
+    )
+    worker_count = 8
+    barrier = Barrier(worker_count)
 
     def exercise(worker_id):
-        for _ in range(100):
+        barrier.wait(timeout=10)
+        for _ in range(50):
             assert vector[50] == 50
             assert mapping[50] == 100
             assert 50 in set_value
             assert sorted_value[50] == 50
             assert double_vector[50] == 50.0
             assert int_vector[50] == 50
+            assert list(vector)[-1] == 99
+            assert dict(mapping.items())[50] == 100
+            assert set(set_value) == set(range(100))
+            assert list(sorted_value)[0] == 0
+            assert list(double_vector)[-1] == 99.0
+            assert list(int_vector)[-1] == 99
+            assert (
+                vector,
+                mapping,
+                set_value,
+                sorted_value,
+            ) == equal_values
             assert memoryview(double_vector)[50] == 50.0
             assert memoryview(int_vector)[50] == 50
             hash(vector)
@@ -163,6 +187,13 @@ def test_concurrent_reads_and_independent_transients():
             hash(double_vector)
             hash(int_vector)
 
+        updated_vector = vector.assoc(50, worker_id)
+        updated_map = mapping.assoc(50, worker_id)
+        updated_set = set_value.conj(worker_id + 100)
+        updated_sorted = sorted_value.conj(worker_id + 100)
+        updated_doubles = double_vector.conj(worker_id + 100)
+        updated_ints = int_vector.conj(worker_id + 100)
+
         vector_builder = vector.transient()
         vector_builder.append(worker_id)
         map_builder = mapping.transient()
@@ -170,25 +201,126 @@ def test_concurrent_reads_and_independent_transients():
         set_builder = set_value.transient()
         set_builder.add(worker_id + 100)
         return (
+            updated_vector[50],
+            updated_map[50],
+            worker_id + 100 in updated_set,
+            updated_sorted[-1],
+            updated_doubles[-1],
+            updated_ints[-1],
             vector_builder.persistent()[-1],
             map_builder.persistent()["worker"],
             worker_id + 100 in set_builder.persistent(),
         )
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        results = list(executor.map(exercise, range(8)))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        results = list(executor.map(exercise, range(worker_count)))
 
-    assert results == [(worker_id, worker_id, True) for worker_id in range(8)]
+    assert results == [
+        (
+            worker_id,
+            worker_id,
+            True,
+            worker_id + 100,
+            float(worker_id + 100),
+            worker_id + 100,
+            worker_id,
+            worker_id,
+            True,
+        )
+        for worker_id in range(worker_count)
+    ]
+    assert list(vector) == list(range(100))
+    assert dict(mapping.items()) == {index: index * 2 for index in range(100)}
+    assert set(set_value) == set(range(100))
 
 
-def test_free_threaded_build_uses_the_compatibility_gil():
+def _clean_subprocess_env(*, force_no_gil=False):
+    env = os.environ.copy()
+    env.pop("PYTHON_GIL", None)
+    env.pop("PYTHONWARNINGS", None)
+    if force_no_gil and sysconfig.get_config_var("Py_GIL_DISABLED"):
+        env["PYTHON_GIL"] = "0"
+    return env
+
+
+def test_free_threaded_import_keeps_the_gil_disabled():
     if not sysconfig.get_config_var("Py_GIL_DISABLED"):
         pytest.skip("requires a free-threaded CPython build")
 
-    assert sys._is_gil_enabled()
+    assert not sys._is_gil_enabled()
+    script = textwrap.dedent(
+        """
+        import sys
+        import sysconfig
+
+        assert sysconfig.get_config_var("Py_GIL_DISABLED")
+        assert not sys._is_gil_enabled(), "GIL enabled before extension import"
+
+        import spork_pds
+        assert not sys._is_gil_enabled(), "GIL enabled by spork_pds import"
+
+        import spork.pds
+        assert not sys._is_gil_enabled(), "GIL enabled by spork.pds import"
+        """
+    )
+    for env in (
+        _clean_subprocess_env(),
+        _clean_subprocess_env(force_no_gil=True),
+    ):
+        result = subprocess.run(
+            [sys.executable, "-W", "error::RuntimeWarning", "-c", script],
+            capture_output=True,
+            env=env,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
 
 
-def test_module_survives_legacy_subinterpreter_teardown():
+def test_concurrent_fresh_import_publishes_one_singleton_set():
+    script = textwrap.dedent(
+        """
+        import importlib
+        import sys
+        import sysconfig
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+
+        worker_count = 16
+        barrier = Barrier(worker_count)
+
+        def load(_worker_id):
+            barrier.wait(timeout=10)
+            module = importlib.import_module("spork_pds")
+            return tuple(
+                id(getattr(module, name))
+                for name in (
+                    "EMPTY_VECTOR",
+                    "EMPTY_DOUBLE_VECTOR",
+                    "EMPTY_LONG_VECTOR",
+                    "EMPTY_MAP",
+                    "EMPTY_SET",
+                    "EMPTY_SORTED_VECTOR",
+                )
+            )
+
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            results = list(executor.map(load, range(worker_count)))
+
+        assert results == [results[0]] * worker_count
+        if sysconfig.get_config_var("Py_GIL_DISABLED"):
+            assert not sys._is_gil_enabled()
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-W", "error::RuntimeWarning", "-c", script],
+        capture_output=True,
+        env=_clean_subprocess_env(force_no_gil=True),
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_module_rejects_or_survives_legacy_subinterpreter_teardown():
     script = textwrap.dedent(
         """
         import spork_pds
@@ -224,8 +356,15 @@ def test_module_survives_legacy_subinterpreter_teardown():
 
         for _ in range(5):
             interpreter = create()
-            run(interpreter)
-            interpreters.destroy(interpreter)
+            try:
+                run(interpreter)
+            except Exception as exc:
+                # CPython 3.12 rejects the unsupported import. Newer APIs can
+                # explicitly create a legacy shared-GIL interpreter that
+                # bypasses the compatibility check.
+                assert "does not support loading in subinterpreters" in str(exc)
+            finally:
+                interpreters.destroy(interpreter)
             assert len(spork_pds.EMPTY_VECTOR) == 0
             assert len(spork_pds.EMPTY_MAP) == 0
             assert len(spork_pds.EMPTY_SET) == 0

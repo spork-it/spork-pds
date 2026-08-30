@@ -17,7 +17,7 @@ The package is the standalone home of the persistent data structures originally 
 - `DoubleVector` and `IntVector`: specialized float64 and int64 vectors with the read-only buffer protocol
 - Transient variants for efficient batches of controlled mutation
 - Structural ABC integration, hashing, iteration, generic aliases, and pickle support
-- CPython 3.10+ support, including free-threaded CPython 3.14 builds via its compatibility GIL
+- CPython 3.10+ support, including native free-threaded execution on CPython 3.14t
 
 ## Installation
 
@@ -96,6 +96,12 @@ assert values[-1] == 99_999
 ```
 
 Calling `persistent()` invalidates the transient. Further edits and element access raise `RuntimeError`; discard the transient immediately after conversion.
+
+### Native free-threading
+
+On free-threaded CPython 3.14t, importing `spork-pds` leaves the GIL disabled. Persistent values are immutable and may be shared between threads, and different transient builders may run in parallel.
+
+A transient is confined to the Python thread that created it. Cross-thread access to the same transient raises `RuntimeError`; convert it to a persistent value before sharing it. Stored Python objects remain responsible for their own thread safety, just as they are when stored in a tuple or dictionary. Isolated and per-interpreter-GIL subinterpreters remain unsupported.
 
 ### Typed vectors and NumPy
 

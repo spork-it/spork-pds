@@ -1,5 +1,6 @@
 import os
 import sys
+import sysconfig
 
 from setuptools import Extension, setup
 
@@ -25,6 +26,13 @@ else:
         ]
 
 
+# Official free-threaded Windows installs do not define this macro for
+# extension builds even though sysconfig reports the ABI correctly.
+define_macros = []
+if sys.platform == "win32" and sysconfig.get_config_var("Py_GIL_DISABLED"):
+    define_macros.append(("Py_GIL_DISABLED", "1"))
+
+
 pds_extension = Extension(
     "spork_pds",
     sources=[
@@ -40,6 +48,7 @@ pds_extension = Extension(
         "src/module.c",
     ],
     depends=["src/pds_internal.h"],
+    define_macros=define_macros,
     extra_compile_args=extra_compile_args,
 )
 

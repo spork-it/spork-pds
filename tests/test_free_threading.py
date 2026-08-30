@@ -1,5 +1,7 @@
+import gc
 import operator
 import sysconfig
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
@@ -59,6 +61,58 @@ class RecordingSortKey:
     def __call__(self, value):
         self.calls += 1
         return value
+
+
+class BarrierHashKey:
+    def __init__(self, value):
+        self.value = value
+        self.barrier = None
+
+    def __hash__(self):
+        if self.barrier is not None:
+            self.barrier.wait(timeout=10)
+        return 20_000 + self.value
+
+    def __eq__(self, other):
+        return isinstance(other, BarrierHashKey) and self.value == other.value
+
+
+class BarrierEqualityKey:
+    def __init__(self, value, barrier=None):
+        self.value = value
+        self.barrier = barrier
+
+    def __hash__(self):
+        return 30_000
+
+    def __eq__(self, other):
+        if self.barrier is not None:
+            self.barrier.wait(timeout=10)
+        return (
+            isinstance(other, BarrierEqualityKey)
+            and self.value == other.value
+        )
+
+
+class BarrierSortedValue:
+    def __init__(self, value):
+        self.value = value
+
+
+class BarrierSortedKey:
+    def __init__(self):
+        self.barrier = None
+
+    def __call__(self, value):
+        if isinstance(value, BarrierSortedValue):
+            if self.barrier is not None:
+                self.barrier.wait(timeout=10)
+            return value.value
+        return value
+
+
+class CyclePayload:
+    pass
 
 
 def _call_on_other_thread(operations):
@@ -227,6 +281,104 @@ def test_wrong_thread_error_precedes_existing_invalid_transient_errors():
         with pytest.raises(RuntimeError) as exc_info:
             operation(transient)
         assert str(exc_info.value) == owner_error
+
+
+def test_parallel_operations_allow_blocking_python_callbacks():
+    worker_count = 8
+    start_barrier = Barrier(worker_count)
+
+    hash_key = BarrierHashKey(7)
+    hash_mapping = pds.Map({hash_key: "hash callback"})
+    hash_key.barrier = Barrier(worker_count)
+
+    stored_equal_key = BarrierEqualityKey(9)
+    equality_mapping = pds.Map({stored_equal_key: "equality callback"})
+    equality_barrier = Barrier(worker_count)
+
+    sorted_key = BarrierSortedKey()
+    sorted_value = pds.SortedVector(range(32), key=sorted_key)
+    sorted_key.barrier = Barrier(worker_count)
+
+    def exercise(worker_id):
+        start_barrier.wait(timeout=10)
+        hash_result = hash_mapping[hash_key]
+        equality_result = equality_mapping[
+            BarrierEqualityKey(9, equality_barrier)
+        ]
+        item = BarrierSortedValue(100 + worker_id)
+        updated = sorted_value.conj(item)
+        return (
+            hash_result,
+            equality_result,
+            updated[-1] is item,
+            len(updated),
+        )
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        results = list(executor.map(exercise, range(worker_count)))
+
+    assert results == [
+        ("hash callback", "equality callback", True, len(sorted_value) + 1)
+    ] * worker_count
+
+    hash_key.barrier = None
+    sorted_key.barrier = None
+    assert hash_mapping[hash_key] == "hash callback"
+    assert equality_mapping[BarrierEqualityKey(9)] == "equality callback"
+    assert list(sorted_value) == list(range(32))
+
+
+@pytest.mark.skipif(not IS_FREE_THREADED, reason="requires free-threaded CPython")
+def test_concurrent_cycle_collection_and_lifecycle_churn():
+    worker_count = 6
+    iterations = 120
+    start_barrier = Barrier(worker_count)
+
+    def churn(worker_id):
+        references = []
+        start_barrier.wait(timeout=10)
+        for iteration in range(iterations):
+            payload = CyclePayload()
+            case = (worker_id + iteration) % 7
+            if case == 0:
+                container = pds.cons(payload)
+                payload.backref = container
+            elif case == 1:
+                container = pds.Vector([payload])
+                payload.backref = container
+            elif case == 2:
+                container = pds.Map({iteration: payload})
+                payload.backref = container
+            elif case == 3:
+                container = pds.Set([payload])
+                payload.backref = container
+            elif case == 4:
+                container = pds.SortedVector([payload], key=id)
+                payload.backref = container
+            elif case == 5:
+                container = iter(pds.Vector([payload]))
+                payload.backref = container
+            else:
+                container = pds.Map({iteration: payload}).transient()
+                payload.backref = container
+
+            references.append(weakref.ref(payload))
+            del container, payload
+            if iteration % 10 == 0:
+                gc.collect()
+        return references
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        references = [
+            reference
+            for worker_references in executor.map(churn, range(worker_count))
+            for reference in worker_references
+        ]
+
+    for _ in range(3):
+        gc.collect()
+    assert len(references) == worker_count * iterations
+    assert all(reference() is None for reference in references)
 
 
 def test_independent_transients_do_not_share_editable_nodes():
