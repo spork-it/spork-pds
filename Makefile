@@ -8,6 +8,7 @@ PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 BUILD := $(PYTHON) -m build
 TWINE := $(PYTHON) -m twine
+PDS_SOURCES := $(wildcard src/*.c src/*.h)
 
 help:
 	@echo "spork-pds - Makefile targets"
@@ -57,7 +58,7 @@ venv: $(VENV_READY)
 build: $(VENV_READY)
 	@set -e; \
 	extension=$$(find . -maxdepth 1 -type f \( -name 'spork_pds*.so' -o -name 'spork_pds*.pyd' \) -print -quit); \
-	if [ -z "$$extension" ] || [ pds.c -nt "$$extension" ]; then \
+	if [ -z "$$extension" ] || find $(PDS_SOURCES) -newer "$$extension" -print -quit | grep -q .; then \
 		echo "Building C extension..."; \
 		$(PYTHON) setup.py build_ext --inplace; \
 		echo "✓ C extension built"; \

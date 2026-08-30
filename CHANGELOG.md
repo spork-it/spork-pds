@@ -2,6 +2,10 @@
 
 All notable changes to `spork-pds` will be documented here.
 
+## 0.1.3
+
+- Split the native extension into focused C translation units under `src/`.
+
 ## 0.1.2
 
 - Add `spork.pds` as the canonical public import namespace.

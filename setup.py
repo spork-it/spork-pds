@@ -27,7 +27,19 @@ else:
 
 pds_extension = Extension(
     "spork_pds",
-    sources=["pds.c"],
+    sources=[
+        "src/common.c",
+        "src/cons.c",
+        "src/vector.c",
+        "src/double_vector.c",
+        "src/int_vector.c",
+        "src/hamt.c",
+        "src/map.c",
+        "src/set.c",
+        "src/sorted_vector.c",
+        "src/module.c",
+    ],
+    depends=["src/pds_internal.h"],
     extra_compile_args=extra_compile_args,
 )
 
