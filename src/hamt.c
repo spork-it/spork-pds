@@ -18,14 +18,29 @@ typedef struct BitmapIndexedNode {
 PyTypeObject BitmapIndexedNodeType;
 BitmapIndexedNode *EMPTY_BIN = NULL;
 
+static int BitmapIndexedNode_traverse(
+    BitmapIndexedNode *self, visitproc visit, void *arg) {
+    Py_VISIT(self->array);
+    Py_VISIT(self->transient_id);
+    return 0;
+}
+
+static int BitmapIndexedNode_clear(BitmapIndexedNode *self) {
+    Py_CLEAR(self->array);
+    Py_CLEAR(self->transient_id);
+    return 0;
+}
+
 static void BitmapIndexedNode_dealloc(BitmapIndexedNode *self) {
-    Py_XDECREF(self->array);
-    Py_XDECREF(self->transient_id);
+    PyObject_GC_UnTrack(self);
+    BitmapIndexedNode_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 BitmapIndexedNode *BitmapIndexedNode_create(unsigned int bitmap, PyObject *array, PyObject *transient_id) {
-    BitmapIndexedNode *node = PyObject_New(BitmapIndexedNode, &BitmapIndexedNodeType);
+    BitmapIndexedNode *node =
+        (BitmapIndexedNode *)BitmapIndexedNodeType.tp_alloc(
+            &BitmapIndexedNodeType, 0);
     if (!node) return NULL;
 
     node->bitmap = bitmap;
@@ -73,14 +88,26 @@ typedef struct ArrayNode {
 
 PyTypeObject ArrayNodeType;
 
+static int ArrayNode_traverse(ArrayNode *self, visitproc visit, void *arg) {
+    Py_VISIT(self->array);
+    Py_VISIT(self->transient_id);
+    return 0;
+}
+
+static int ArrayNode_clear(ArrayNode *self) {
+    Py_CLEAR(self->array);
+    Py_CLEAR(self->transient_id);
+    return 0;
+}
+
 static void ArrayNode_dealloc(ArrayNode *self) {
-    Py_XDECREF(self->array);
-    Py_XDECREF(self->transient_id);
+    PyObject_GC_UnTrack(self);
+    ArrayNode_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static ArrayNode *ArrayNode_create(int count, PyObject *array, PyObject *transient_id) {
-    ArrayNode *node = PyObject_New(ArrayNode, &ArrayNodeType);
+    ArrayNode *node = (ArrayNode *)ArrayNodeType.tp_alloc(&ArrayNodeType, 0);
     if (!node) return NULL;
 
     node->count = count;
@@ -136,14 +163,29 @@ typedef struct HashCollisionNode {
 
 PyTypeObject HashCollisionNodeType;
 
+static int HashCollisionNode_traverse(
+    HashCollisionNode *self, visitproc visit, void *arg) {
+    Py_VISIT(self->array);
+    Py_VISIT(self->transient_id);
+    return 0;
+}
+
+static int HashCollisionNode_clear(HashCollisionNode *self) {
+    Py_CLEAR(self->array);
+    Py_CLEAR(self->transient_id);
+    return 0;
+}
+
 static void HashCollisionNode_dealloc(HashCollisionNode *self) {
-    Py_XDECREF(self->array);
-    Py_XDECREF(self->transient_id);
+    PyObject_GC_UnTrack(self);
+    HashCollisionNode_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static HashCollisionNode *HashCollisionNode_create(Py_hash_t hash_val, int count, PyObject *array, PyObject *transient_id) {
-    HashCollisionNode *node = PyObject_New(HashCollisionNode, &HashCollisionNodeType);
+    HashCollisionNode *node =
+        (HashCollisionNode *)HashCollisionNodeType.tp_alloc(
+            &HashCollisionNodeType, 0);
     if (!node) return NULL;
 
     node->hash = hash_val;
@@ -197,7 +239,11 @@ PyTypeObject BitmapIndexedNodeType = {
     .tp_name = "spork_pds.BitmapIndexedNode",
     .tp_basicsize = sizeof(BitmapIndexedNode),
     .tp_dealloc = (destructor)BitmapIndexedNode_dealloc,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)BitmapIndexedNode_traverse,
+    .tp_clear = (inquiry)BitmapIndexedNode_clear,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
 };
 
 PyTypeObject ArrayNodeType = {
@@ -205,7 +251,11 @@ PyTypeObject ArrayNodeType = {
     .tp_name = "spork_pds.ArrayNode",
     .tp_basicsize = sizeof(ArrayNode),
     .tp_dealloc = (destructor)ArrayNode_dealloc,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)ArrayNode_traverse,
+    .tp_clear = (inquiry)ArrayNode_clear,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
 };
 
 PyTypeObject HashCollisionNodeType = {
@@ -213,7 +263,11 @@ PyTypeObject HashCollisionNodeType = {
     .tp_name = "spork_pds.HashCollisionNode",
     .tp_basicsize = sizeof(HashCollisionNode),
     .tp_dealloc = (destructor)HashCollisionNode_dealloc,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)HashCollisionNode_traverse,
+    .tp_clear = (inquiry)HashCollisionNode_clear,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
 };
 
 // Helper to create a node for two key-value pairs
@@ -562,13 +616,28 @@ typedef struct {
 
 PyTypeObject BitmapIndexedNodeIteratorType;
 
+static int BitmapIndexedNodeIterator_traverse(
+    BitmapIndexedNodeIterator *self, visitproc visit, void *arg) {
+    Py_VISIT(self->node);
+    Py_VISIT(self->child_iter);
+    return 0;
+}
+
+static int BitmapIndexedNodeIterator_clear(BitmapIndexedNodeIterator *self) {
+    Py_CLEAR(self->node);
+    Py_CLEAR(self->child_iter);
+    return 0;
+}
+
 static void BitmapIndexedNodeIterator_dealloc(BitmapIndexedNodeIterator *self) {
-    Py_XDECREF(self->node);
-    Py_XDECREF(self->child_iter);
+    PyObject_GC_UnTrack(self);
+    BitmapIndexedNodeIterator_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static PyObject *BitmapIndexedNodeIterator_next(BitmapIndexedNodeIterator *self) {
+    if (self->node == NULL || self->node->array == NULL) return NULL;
+
     // If we have a child iterator, try to get next from it
     while (self->child_iter) {
         PyObject *result = PyIter_Next(self->child_iter);
@@ -626,13 +695,19 @@ PyTypeObject BitmapIndexedNodeIteratorType = {
     .tp_name = "spork_pds.BitmapIndexedNodeIterator",
     .tp_basicsize = sizeof(BitmapIndexedNodeIterator),
     .tp_dealloc = (destructor)BitmapIndexedNodeIterator_dealloc,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)BitmapIndexedNodeIterator_traverse,
+    .tp_clear = (inquiry)BitmapIndexedNodeIterator_clear,
     .tp_iter = PyObject_SelfIter,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
     .tp_iternext = (iternextfunc)BitmapIndexedNodeIterator_next,
 };
 
 PyObject *BitmapIndexedNode_iter_mode(BitmapIndexedNode *self, int mode) {
-    BitmapIndexedNodeIterator *it = PyObject_New(BitmapIndexedNodeIterator, &BitmapIndexedNodeIteratorType);
+    BitmapIndexedNodeIterator *it =
+        (BitmapIndexedNodeIterator *)BitmapIndexedNodeIteratorType.tp_alloc(
+            &BitmapIndexedNodeIteratorType, 0);
     if (!it) return NULL;
 
     it->node = self;
@@ -731,12 +806,10 @@ static PyObject *ArrayNode_pack(ArrayNode *self, PyObject *transient_id, int idx
     for (int i = 0; i < WIDTH; i++) {
         PyObject *node = PyList_GET_ITEM(self->array, i);
         if (i != idx && node != Py_None) {
-            Py_INCREF(Py_None);
             if (PyList_Append(new_array, Py_None) < 0) {
                 Py_DECREF(new_array);
                 return NULL;
             }
-            Py_INCREF(node);
             if (PyList_Append(new_array, node) < 0) {
                 Py_DECREF(new_array);
                 return NULL;
@@ -810,13 +883,28 @@ typedef struct {
 
 PyTypeObject ArrayNodeIteratorType;
 
+static int ArrayNodeIterator_traverse(
+    ArrayNodeIterator *self, visitproc visit, void *arg) {
+    Py_VISIT(self->node);
+    Py_VISIT(self->child_iter);
+    return 0;
+}
+
+static int ArrayNodeIterator_clear(ArrayNodeIterator *self) {
+    Py_CLEAR(self->node);
+    Py_CLEAR(self->child_iter);
+    return 0;
+}
+
 static void ArrayNodeIterator_dealloc(ArrayNodeIterator *self) {
-    Py_XDECREF(self->node);
-    Py_XDECREF(self->child_iter);
+    PyObject_GC_UnTrack(self);
+    ArrayNodeIterator_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static PyObject *ArrayNodeIterator_next(ArrayNodeIterator *self) {
+    if (self->node == NULL || self->node->array == NULL) return NULL;
+
     while (self->child_iter) {
         PyObject *result = PyIter_Next(self->child_iter);
         if (result) return result;
@@ -853,13 +941,18 @@ PyTypeObject ArrayNodeIteratorType = {
     .tp_name = "spork_pds.ArrayNodeIterator",
     .tp_basicsize = sizeof(ArrayNodeIterator),
     .tp_dealloc = (destructor)ArrayNodeIterator_dealloc,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)ArrayNodeIterator_traverse,
+    .tp_clear = (inquiry)ArrayNodeIterator_clear,
     .tp_iter = PyObject_SelfIter,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
     .tp_iternext = (iternextfunc)ArrayNodeIterator_next,
 };
 
 PyObject *ArrayNode_iter_mode(ArrayNode *self, int mode) {
-    ArrayNodeIterator *it = PyObject_New(ArrayNodeIterator, &ArrayNodeIteratorType);
+    ArrayNodeIterator *it = (ArrayNodeIterator *)ArrayNodeIteratorType.tp_alloc(
+        &ArrayNodeIteratorType, 0);
     if (!it) return NULL;
 
     it->node = self;
@@ -992,13 +1085,26 @@ typedef struct {
 
 PyTypeObject HashCollisionNodeIteratorType;
 
+static int HashCollisionNodeIterator_traverse(
+    HashCollisionNodeIterator *self, visitproc visit, void *arg) {
+    Py_VISIT(self->node);
+    return 0;
+}
+
+static int HashCollisionNodeIterator_clear(HashCollisionNodeIterator *self) {
+    Py_CLEAR(self->node);
+    return 0;
+}
+
 static void HashCollisionNodeIterator_dealloc(HashCollisionNodeIterator *self) {
-    Py_XDECREF(self->node);
+    PyObject_GC_UnTrack(self);
+    HashCollisionNodeIterator_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static PyObject *HashCollisionNodeIterator_next(HashCollisionNodeIterator *self) {
-    if (self->index >= PyList_Size(self->node->array)) {
+    if (self->node == NULL || self->node->array == NULL ||
+        self->index >= PyList_Size(self->node->array)) {
         return NULL;
     }
 
@@ -1028,13 +1134,19 @@ PyTypeObject HashCollisionNodeIteratorType = {
     .tp_name = "spork_pds.HashCollisionNodeIterator",
     .tp_basicsize = sizeof(HashCollisionNodeIterator),
     .tp_dealloc = (destructor)HashCollisionNodeIterator_dealloc,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)HashCollisionNodeIterator_traverse,
+    .tp_clear = (inquiry)HashCollisionNodeIterator_clear,
     .tp_iter = PyObject_SelfIter,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
     .tp_iternext = (iternextfunc)HashCollisionNodeIterator_next,
 };
 
 PyObject *HashCollisionNode_iter_mode(HashCollisionNode *self, int mode) {
-    HashCollisionNodeIterator *it = PyObject_New(HashCollisionNodeIterator, &HashCollisionNodeIteratorType);
+    HashCollisionNodeIterator *it =
+        (HashCollisionNodeIterator *)HashCollisionNodeIteratorType.tp_alloc(
+            &HashCollisionNodeIteratorType, 0);
     if (!it) return NULL;
 
     it->node = self;

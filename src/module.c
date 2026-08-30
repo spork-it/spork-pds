@@ -102,10 +102,14 @@ static int pds_exec(PyObject *m);
 
 static PyModuleDef_Slot pds_slots[] = {
     {Py_mod_exec, pds_exec},
-#if PY_VERSION_HEX >= 0x030D0000
-    // Python 3.13+: Declare this module as free-threading safe
-    {Py_mod_gil, Py_MOD_GIL_NOT_USED},
+#if PY_VERSION_HEX >= 0x030C0000
+    /* Static types and process-wide empty singletons are not interpreter-local. */
+    {Py_mod_multiple_interpreters, Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED},
 #endif
+    /*
+     * Do not declare Py_MOD_GIL_NOT_USED. Mutable transients and lazy caches
+     * currently rely on CPython's compatibility GIL for synchronization.
+     */
     {0, NULL}
 };
 
@@ -182,6 +186,19 @@ static int pds_exec(PyObject *m) {
         st->EMPTY_MAP = (PyObject *)EMPTY_MAP;
         st->EMPTY_SET = (PyObject *)EMPTY_SET;
         st->EMPTY_SORTED_VECTOR = (PyObject *)EMPTY_SORTED_VECTOR;
+
+        /* Module state owns its own references in addition to the globals. */
+        Py_INCREF(st->_MISSING);
+        Py_INCREF(st->EMPTY_NODE);
+        Py_INCREF(st->EMPTY_VECTOR);
+        Py_INCREF(st->EMPTY_DOUBLE_NODE);
+        Py_INCREF(st->EMPTY_DOUBLE_VECTOR);
+        Py_INCREF(st->EMPTY_LONG_NODE);
+        Py_INCREF(st->EMPTY_LONG_VECTOR);
+        Py_INCREF(st->EMPTY_BIN);
+        Py_INCREF(st->EMPTY_MAP);
+        Py_INCREF(st->EMPTY_SET);
+        Py_INCREF(st->EMPTY_SORTED_VECTOR);
     } else {
         // First initialization - create all singletons
 
@@ -223,7 +240,8 @@ static int pds_exec(PyObject *m) {
         if (!st->EMPTY_SET) return -1;
 
         // Create empty sorted vector
-        st->EMPTY_SORTED_VECTOR = (PyObject *)PyObject_New(SortedVector, &SortedVectorType);
+        st->EMPTY_SORTED_VECTOR = (PyObject *)SortedVectorType.tp_alloc(
+            &SortedVectorType, 0);
         if (!st->EMPTY_SORTED_VECTOR) return -1;
         {
             SortedVector *sv = (SortedVector *)st->EMPTY_SORTED_VECTOR;
@@ -233,8 +251,8 @@ static int pds_exec(PyObject *m) {
             sv->reverse = 0;
         }
 
-        // Immortalize singletons for Python 3.12+ to prevent refcount contention
-        // in multi-threaded code. Immortal objects don't have their refcounts modified.
+        // Immortalize singletons on free-threaded CPython to prevent refcount
+        // contention. Immortal objects don't have their refcounts modified.
         PDS_SET_IMMORTAL(st->_MISSING);
         PDS_SET_IMMORTAL(st->EMPTY_NODE);
         PDS_SET_IMMORTAL(st->EMPTY_VECTOR);
@@ -260,6 +278,23 @@ static int pds_exec(PyObject *m) {
         EMPTY_MAP = (Map *)st->EMPTY_MAP;
         EMPTY_SET = (Set *)st->EMPTY_SET;
         EMPTY_SORTED_VECTOR = (SortedVector *)st->EMPTY_SORTED_VECTOR;
+
+        /*
+         * Keep process-lifetime references for the global aliases. Existing
+         * instances may still use the empty roots while module state is being
+         * cleared during interpreter shutdown.
+         */
+        Py_INCREF(st->_MISSING);
+        Py_INCREF(st->EMPTY_NODE);
+        Py_INCREF(st->EMPTY_VECTOR);
+        Py_INCREF(st->EMPTY_DOUBLE_NODE);
+        Py_INCREF(st->EMPTY_DOUBLE_VECTOR);
+        Py_INCREF(st->EMPTY_LONG_NODE);
+        Py_INCREF(st->EMPTY_LONG_VECTOR);
+        Py_INCREF(st->EMPTY_BIN);
+        Py_INCREF(st->EMPTY_MAP);
+        Py_INCREF(st->EMPTY_SET);
+        Py_INCREF(st->EMPTY_SORTED_VECTOR);
 
         // Mark as initialized
         _singletons_initialized = 1;

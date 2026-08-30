@@ -3,9 +3,21 @@
 // === Cons ===
 PyTypeObject ConsType;
 
+static int Cons_traverse(Cons *self, visitproc visit, void *arg) {
+    Py_VISIT(self->first);
+    Py_VISIT(self->rest);
+    return 0;
+}
+
+static int Cons_clear(Cons *self) {
+    Py_CLEAR(self->first);
+    Py_CLEAR(self->rest);
+    return 0;
+}
+
 static void Cons_dealloc(Cons *self) {
-    Py_XDECREF(self->first);
-    Py_XDECREF(self->rest);
+    PyObject_GC_UnTrack(self);
+    Cons_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
@@ -18,6 +30,7 @@ static PyObject *Cons_new(PyTypeObject *type, PyObject *args, PyObject *kwds) {
         Py_INCREF(Py_None);
         self->hash = 0;
         self->hash_computed = 0;
+        self->initialized = 0;
     }
     return (PyObject *)self;
 }
@@ -25,6 +38,11 @@ static PyObject *Cons_new(PyTypeObject *type, PyObject *args, PyObject *kwds) {
 static int Cons_init(Cons *self, PyObject *args, PyObject *kwds) {
     static char *kwlist[] = {"first", "rest", NULL};
     PyObject *first = NULL, *rest = NULL;
+
+    if (self->initialized) {
+        PyErr_SetString(PyExc_TypeError, "Cons values cannot be reinitialized");
+        return -1;
+    }
 
     if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|O", kwlist, &first, &rest)) {
         return -1;
@@ -44,6 +62,7 @@ static int Cons_init(Cons *self, PyObject *args, PyObject *kwds) {
     }
 
     self->hash_computed = 0;
+    self->initialized = 1;
     return 0;
 }
 
@@ -82,7 +101,7 @@ static Py_hash_t Cons_hash(Cons *self) {
         return self->hash;
     }
 
-    Py_hash_t h = 0;
+    Py_uhash_t h = 0;
     PyObject *curr = (PyObject *)self;
     while (curr != Py_None && Py_TYPE(curr) == &ConsType) {
         Cons *c = (Cons *)curr;
@@ -90,13 +109,13 @@ static Py_hash_t Cons_hash(Cons *self) {
         if (item_hash == -1) {
             return -1;
         }
-        h = 31 * h + item_hash;
+        h = (Py_uhash_t)31 * h + (Py_uhash_t)item_hash;
         curr = c->rest;
     }
 
-    self->hash = h;
+    self->hash = pds_finalize_hash(h);
     self->hash_computed = 1;
-    return h;
+    return self->hash;
 }
 
 static PyObject *Cons_richcompare(Cons *self, PyObject *other, int op) {
@@ -182,6 +201,7 @@ static PyObject *Cons_conj(Cons *self, PyObject *val) {
     Py_INCREF(self);
     new_cons->hash = 0;
     new_cons->hash_computed = 0;
+    new_cons->initialized = 1;
 
     return (PyObject *)new_cons;
 }
@@ -218,13 +238,25 @@ typedef struct {
 
 PyTypeObject ConsIteratorType;
 
+static int ConsIterator_traverse(ConsIterator *self, visitproc visit, void *arg) {
+    Py_VISIT(self->curr);
+    return 0;
+}
+
+static int ConsIterator_clear(ConsIterator *self) {
+    Py_CLEAR(self->curr);
+    return 0;
+}
+
 static void ConsIterator_dealloc(ConsIterator *self) {
-    Py_XDECREF(self->curr);
+    PyObject_GC_UnTrack(self);
+    ConsIterator_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static PyObject *ConsIterator_next(ConsIterator *self) {
-    if (self->curr == Py_None || !PyObject_TypeCheck(self->curr, &ConsType)) {
+    if (self->curr == NULL || self->curr == Py_None ||
+        !PyObject_TypeCheck(self->curr, &ConsType)) {
         return NULL;  // StopIteration
     }
 
@@ -245,13 +277,18 @@ PyTypeObject ConsIteratorType = {
     .tp_name = "spork_pds.ConsIterator",
     .tp_basicsize = sizeof(ConsIterator),
     .tp_dealloc = (destructor)ConsIterator_dealloc,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)ConsIterator_traverse,
+    .tp_clear = (inquiry)ConsIterator_clear,
     .tp_iter = PyObject_SelfIter,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
     .tp_iternext = (iternextfunc)ConsIterator_next,
 };
 
 static PyObject *Cons_iter(Cons *self) {
-    ConsIterator *it = PyObject_New(ConsIterator, &ConsIteratorType);
+    ConsIterator *it = (ConsIterator *)ConsIteratorType.tp_alloc(
+        &ConsIteratorType, 0);
     if (!it) return NULL;
 
     it->curr = (PyObject *)self;
@@ -269,13 +306,17 @@ PyTypeObject ConsType = {
     .tp_repr = (reprfunc)Cons_repr,
     .tp_as_sequence = &Cons_as_sequence,
     .tp_hash = (hashfunc)Cons_hash,
-    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)Cons_traverse,
+    .tp_clear = (inquiry)Cons_clear,
     .tp_richcompare = (richcmpfunc)Cons_richcompare,
     .tp_iter = (getiterfunc)Cons_iter,
     .tp_methods = Cons_methods,
     .tp_getset = Cons_getsetters,
     .tp_init = (initproc)Cons_init,
+    .tp_alloc = PyType_GenericAlloc,
     .tp_new = Cons_new,
+    .tp_free = PyObject_GC_Del,
 };
 
 PyObject *pds_cons(PyObject *self, PyObject *args) {
@@ -294,6 +335,7 @@ PyObject *pds_cons(PyObject *self, PyObject *args) {
     Py_INCREF(rest);
     c->hash = 0;
     c->hash_computed = 0;
+    c->initialized = 1;
 
     return (PyObject *)c;
 }

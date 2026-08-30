@@ -14,9 +14,21 @@ typedef struct Map {
 PyTypeObject MapType;
 Map *EMPTY_MAP = NULL;
 
+static int Map_traverse(Map *self, visitproc visit, void *arg) {
+    Py_VISIT(self->root);
+    Py_VISIT(self->transient_id);
+    return 0;
+}
+
+static int Map_clear(Map *self) {
+    Py_CLEAR(self->root);
+    Py_CLEAR(self->transient_id);
+    return 0;
+}
+
 static void Map_dealloc(Map *self) {
-    Py_XDECREF(self->root);
-    Py_XDECREF(self->transient_id);
+    PyObject_GC_UnTrack(self);
+    Map_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
@@ -214,7 +226,7 @@ static PyObject *Map_dissoc(Map *self, PyObject *key) {
 
 static PyObject *Map_iter(Map *self) {
     if (self->root == NULL) {
-        return PyObject_GetIter(PyList_New(0));
+        return pds_empty_iterator();
     }
 
     // Get a key-only iterator directly (no tuple allocation)
@@ -229,7 +241,7 @@ static PyObject *Map_iter(Map *self) {
 
 static PyObject *Map_items(Map *self, PyObject *Py_UNUSED(ignored)) {
     if (self->root == NULL) {
-        return PyObject_GetIter(PyList_New(0));
+        return pds_empty_iterator();
     }
 
     if (PyObject_TypeCheck(self->root, &BitmapIndexedNodeType)) {
@@ -247,7 +259,7 @@ static PyObject *Map_keys(Map *self, PyObject *Py_UNUSED(ignored)) {
 
 static PyObject *Map_values(Map *self, PyObject *Py_UNUSED(ignored)) {
     if (self->root == NULL) {
-        return PyObject_GetIter(PyList_New(0));
+        return pds_empty_iterator();
     }
 
     // Get a value-only iterator directly (no tuple allocation)
@@ -265,7 +277,7 @@ static Py_hash_t Map_hash(Map *self) {
         return self->hash;
     }
 
-    Py_hash_t h = 0;
+    Py_uhash_t h = 0;
     PyObject *items_iter = Map_items(self, NULL);
     if (!items_iter) return -1;
 
@@ -283,15 +295,15 @@ static Py_hash_t Map_hash(Map *self) {
             return -1;
         }
 
-        h += kh ^ vh;
+        h += (Py_uhash_t)kh ^ (Py_uhash_t)vh;
     }
     Py_DECREF(items_iter);
 
     if (PyErr_Occurred()) return -1;
 
-    self->hash = h;
+    self->hash = pds_finalize_hash(h);
     self->hash_computed = 1;
-    return h;
+    return self->hash;
 }
 
 static PyObject *Map_richcompare(Map *self, PyObject *other, int op) {
@@ -525,6 +537,7 @@ static PyObject *Map_to_seq(Map *self, PyObject *Py_UNUSED(ignored)) {
         Py_INCREF(new_cons->rest);
         new_cons->hash = 0;
         new_cons->hash_computed = 0;
+        new_cons->initialized = 1;
 
         result = new_cons;
     }
@@ -897,12 +910,16 @@ PyTypeObject MapType = {
     .tp_as_sequence = &Map_as_sequence,
     .tp_as_mapping = &Map_as_mapping,
     .tp_hash = (hashfunc)Map_hash,
-    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)Map_traverse,
+    .tp_clear = (inquiry)Map_clear,
     .tp_richcompare = (richcmpfunc)Map_richcompare,
     .tp_iter = (getiterfunc)Map_iter,
     .tp_methods = Map_methods,
     .tp_init = (initproc)Map_init,
+    .tp_alloc = PyType_GenericAlloc,
     .tp_new = Map_new,
+    .tp_free = PyObject_GC_Del,
 };
 
 // === TransientMap ===
@@ -913,14 +930,28 @@ typedef struct TransientMap {
     PyObject *id;
 } TransientMap;
 
+static int TransientMap_traverse(
+    TransientMap *self, visitproc visit, void *arg) {
+    Py_VISIT(self->root);
+    Py_VISIT(self->id);
+    return 0;
+}
+
+static int TransientMap_clear(TransientMap *self) {
+    Py_CLEAR(self->root);
+    Py_CLEAR(self->id);
+    return 0;
+}
+
 static void TransientMap_dealloc(TransientMap *self) {
-    Py_XDECREF(self->root);
-    Py_XDECREF(self->id);
+    PyObject_GC_UnTrack(self);
+    TransientMap_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static PyObject *Map_transient(Map *self, PyObject *Py_UNUSED(ignored)) {
-    TransientMap *t = PyObject_New(TransientMap, &TransientMapType);
+    TransientMap *t = (TransientMap *)TransientMapType.tp_alloc(
+        &TransientMapType, 0);
     if (!t) return NULL;
 
     t->id = PyObject_New(PyObject, &PdsSentinelType);
@@ -1194,7 +1225,7 @@ static PyObject *TransientMap_iter(TransientMap *self) {
 
     if (self->root == NULL) {
         // Return empty iterator
-        return PyObject_GetIter(PyTuple_New(0));
+        return pds_empty_iterator();
     }
 
     if (PyObject_TypeCheck(self->root, &BitmapIndexedNodeType)) {
@@ -1215,7 +1246,7 @@ static PyObject *TransientMap_values(TransientMap *self, PyObject *Py_UNUSED(ign
     if (PyErr_Occurred()) return NULL;
 
     if (self->root == NULL) {
-        return PyObject_GetIter(PyTuple_New(0));
+        return pds_empty_iterator();
     }
 
     if (PyObject_TypeCheck(self->root, &BitmapIndexedNodeType)) {
@@ -1232,7 +1263,7 @@ static PyObject *TransientMap_items(TransientMap *self, PyObject *Py_UNUSED(igno
     if (PyErr_Occurred()) return NULL;
 
     if (self->root == NULL) {
-        return PyObject_GetIter(PyTuple_New(0));
+        return pds_empty_iterator();
     }
 
     if (PyObject_TypeCheck(self->root, &BitmapIndexedNodeType)) {
@@ -1301,9 +1332,13 @@ PyTypeObject TransientMapType = {
     .tp_dealloc = (destructor)TransientMap_dealloc,
     .tp_as_sequence = &TransientMap_as_sequence,
     .tp_as_mapping = &TransientMap_as_mapping,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)TransientMap_traverse,
+    .tp_clear = (inquiry)TransientMap_clear,
     .tp_iter = (getiterfunc)TransientMap_iter,
     .tp_methods = TransientMap_methods,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
 };
 
 PyObject *pds_hash_map(PyObject *self, PyObject *args) {
@@ -1341,5 +1376,7 @@ PyObject *pds_hash_map(PyObject *self, PyObject *args) {
         Py_DECREF(result);
     }
 
-    return TransientMap_persistent(t, NULL);
+    PyObject *result = TransientMap_persistent(t, NULL);
+    Py_DECREF(t);
+    return result;
 }

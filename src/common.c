@@ -59,6 +59,18 @@ Generic_class_getitem(PyObject *cls, PyObject *args)
     return result;
 }
 
+PyObject *
+pds_empty_iterator(void)
+{
+    PyObject *empty = PyTuple_New(0);
+    if (empty == NULL) {
+        return NULL;
+    }
+    PyObject *iterator = PyObject_GetIter(empty);
+    Py_DECREF(empty);
+    return iterator;
+}
+
 int
 ctpop(unsigned int i)
 {

@@ -14,37 +14,60 @@ typedef struct IntVectorNode {
         int64_t values[WIDTH];
         struct IntVectorNode *children[WIDTH];
     } data;
-    int valid_mask;
+    uint32_t valid_mask;
+    int is_leaf;
     PyObject *transient_id;
 } IntVectorNode;
 
 PyTypeObject IntVectorNodeType;
 
 static void IntVectorNode_dealloc(IntVectorNode *self) {
+    if (!self->is_leaf) {
+        for (int i = 0; i < WIDTH; i++) {
+            if (self->valid_mask & (1U << i)) {
+                Py_XDECREF(self->data.children[i]);
+            }
+        }
+    }
     Py_XDECREF(self->transient_id);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-IntVectorNode *IntVectorNode_create(PyObject *transient_id) {
-    IntVectorNode *node = PyObject_New(IntVectorNode, &IntVectorNodeType);
+static IntVectorNode *
+IntVectorNode_create_kind(PyObject *transient_id, int is_leaf) {
+    IntVectorNode *node = (IntVectorNode *)IntVectorNodeType.tp_alloc(
+        &IntVectorNodeType, 0);
     if (!node) return NULL;
 
-    for (int i = 0; i < WIDTH; i++) {
-        node->data.values[i] = 0;
-        node->data.children[i] = NULL;
-    }
+    memset(&node->data, 0, sizeof(node->data));
     node->valid_mask = 0;
+    node->is_leaf = is_leaf;
     node->transient_id = transient_id;
     Py_XINCREF(transient_id);
     return node;
 }
 
+IntVectorNode *IntVectorNode_create(PyObject *transient_id) {
+    return IntVectorNode_create_kind(transient_id, 0);
+}
+
+static IntVectorNode *IntVectorNode_create_leaf(PyObject *transient_id) {
+    return IntVectorNode_create_kind(transient_id, 1);
+}
+
 static IntVectorNode *IntVectorNode_clone(IntVectorNode *self, PyObject *transient_id) {
-    IntVectorNode *node = IntVectorNode_create(transient_id);
+    IntVectorNode *node = IntVectorNode_create_kind(transient_id, self->is_leaf);
     if (!node) return NULL;
 
     memcpy(&node->data, &self->data, sizeof(self->data));
     node->valid_mask = self->valid_mask;
+    if (!self->is_leaf) {
+        for (int i = 0; i < WIDTH; i++) {
+            if (self->valid_mask & (1U << i)) {
+                Py_XINCREF(node->data.children[i]);
+            }
+        }
+    }
     return node;
 }
 
@@ -58,6 +81,7 @@ PyTypeObject IntVectorNodeType = {
     .tp_basicsize = sizeof(IntVectorNode),
     .tp_dealloc = (destructor)IntVectorNode_dealloc,
     .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_alloc = PyType_GenericAlloc,
 };
 
 // Global empty long node
@@ -290,7 +314,7 @@ static IntVectorNode *IntVector_push_tail(IntVector *self, int level, IntVectorN
         Py_INCREF(tail_node);
     } else {
         IntVectorNode *child = parent->data.children[subidx];
-        if (child != NULL && (parent->valid_mask & (1 << subidx))) {
+        if (child != NULL && (parent->valid_mask & (1U << subidx))) {
             node_to_insert = IntVector_push_tail(self, level - BITS, child, tail_node, transient_id);
         } else {
             node_to_insert = IntVector_new_path(self, level - BITS, tail_node, transient_id);
@@ -301,11 +325,11 @@ static IntVectorNode *IntVector_push_tail(IntVector *self, int level, IntVectorN
         }
     }
 
-    if (ret->valid_mask & (1 << subidx)) {
+    if (ret->valid_mask & (1U << subidx)) {
         Py_XDECREF(ret->data.children[subidx]);
     }
     ret->data.children[subidx] = node_to_insert;
-    ret->valid_mask |= (1 << subidx);
+    ret->valid_mask |= (1U << subidx);
     return ret;
 }
 
@@ -338,12 +362,12 @@ static PyObject *IntVector_conj(IntVector *self, PyObject *val) {
     }
 
     // Tail is full, push into trie
-    IntVectorNode *tail_node = IntVectorNode_create(transient_id);
+    IntVectorNode *tail_node = IntVectorNode_create_leaf(transient_id);
     if (!tail_node) return NULL;
 
     for (Py_ssize_t i = 0; i < self->tail_len && i < WIDTH; i++) {
         tail_node->data.values[i] = self->tail[i];
-        tail_node->valid_mask |= (1 << i);
+        tail_node->valid_mask |= (1U << i);
     }
 
     int new_shift = self->shift;
@@ -448,32 +472,25 @@ static Py_hash_t IntVector_hash(IntVector *self) {
         return self->hash;
     }
 
-    Py_hash_t h = 0;
+    Py_uhash_t h = 0;
     for (Py_ssize_t i = 0; i < self->cnt; i++) {
         int64_t val = IntVector_nth_raw(self, i);
         Py_hash_t item_hash = (Py_hash_t)val;
         if (item_hash == -1) item_hash = -2;
-        h = 31 * h + item_hash;
+        h = (Py_uhash_t)31 * h + (Py_uhash_t)item_hash;
     }
 
-    if (h == -1) h = -2;
-    self->hash = h;
+    self->hash = pds_finalize_hash(h);
     self->hash_computed = 1;
-    return h;
+    return self->hash;
 }
 
 // Buffer Protocol for IntVector
 static int IntVector_flatten(IntVector *self) {
-    // Optimistic check - use atomic load for thread safety in free-threaded Python
-#if HAVE_STDATOMIC
-    if (atomic_load_explicit((_Atomic(int64_t *)*)&self->flat_buffer_cache, memory_order_acquire) != NULL) {
-        return 0;
-    }
-#else
+    /* The compatibility GIL serializes initialization of this lazy cache. */
     if (self->flat_buffer_cache != NULL) {
         return 0;
     }
-#endif
 
     if (self->cnt == 0) {
         return 0;
@@ -493,22 +510,7 @@ static int IntVector_flatten(IntVector *self) {
         }
     }
 
-    // Atomic CAS: Try to swap NULL with our new buffer
-    // If another thread beat us, free ours and use theirs
-#if HAVE_STDATOMIC
-    int64_t *expected = NULL;
-    if (!atomic_compare_exchange_strong_explicit(
-            (_Atomic(int64_t *)*)&self->flat_buffer_cache,
-            &expected,
-            buffer,
-            memory_order_release,
-            memory_order_acquire)) {
-        // We lost the race; another thread set it. Free ours.
-        free(buffer);
-    }
-#else
     self->flat_buffer_cache = buffer;
-#endif
     return 0;
 }
 
@@ -594,7 +596,8 @@ PyTypeObject IntVectorIteratorType = {
 };
 
 static PyObject *IntVector_iter(IntVector *self) {
-    IntVectorIterator *it = PyObject_New(IntVectorIterator, &IntVectorIteratorType);
+    IntVectorIterator *it = (IntVectorIterator *)IntVectorIteratorType.tp_alloc(
+        &IntVectorIteratorType, 0);
     if (!it) return NULL;
     it->vec = self;
     Py_INCREF(self);
@@ -672,7 +675,7 @@ static IntVectorNode *TransientIntVector_push_tail(TransientIntVector *self, int
         Py_INCREF(tail_node);
     } else {
         IntVectorNode *child = parent->data.children[subidx];
-        if (child != NULL && (parent->valid_mask & (1 << subidx))) {
+        if (child != NULL && (parent->valid_mask & (1U << subidx))) {
             node_to_insert = TransientIntVector_push_tail(self, level - BITS, child, tail_node);
         } else {
             node_to_insert = TransientIntVector_new_path(self, level - BITS, tail_node);
@@ -683,11 +686,11 @@ static IntVectorNode *TransientIntVector_push_tail(TransientIntVector *self, int
         }
     }
 
-    if (ret->valid_mask & (1 << subidx)) {
+    if (ret->valid_mask & (1U << subidx)) {
         Py_XDECREF(ret->data.children[subidx]);
     }
     ret->data.children[subidx] = node_to_insert;
-    ret->valid_mask |= (1 << subidx);
+    ret->valid_mask |= (1U << subidx);
     return ret;
 }
 
@@ -713,12 +716,12 @@ static int TransientIntVector_conj_mut_raw(TransientIntVector *self, int64_t lva
     }
 
     // Tail is full, push into trie
-    IntVectorNode *tail_node = IntVectorNode_create(self->id);
+    IntVectorNode *tail_node = IntVectorNode_create_leaf(self->id);
     if (!tail_node) return -1;
 
     for (Py_ssize_t i = 0; i < self->tail_len && i < WIDTH; i++) {
         tail_node->data.values[i] = self->tail[i];
-        tail_node->valid_mask |= (1 << i);
+        tail_node->valid_mask |= (1U << i);
     }
 
     // Reset tail
@@ -795,12 +798,12 @@ static PyObject *TransientIntVector_conj_mut(TransientIntVector *self, PyObject 
     }
 
     // Tail is full, push into trie
-    IntVectorNode *tail_node = IntVectorNode_create(self->id);
+    IntVectorNode *tail_node = IntVectorNode_create_leaf(self->id);
     if (!tail_node) return NULL;
 
     for (Py_ssize_t i = 0; i < self->tail_len && i < WIDTH; i++) {
         tail_node->data.values[i] = self->tail[i];
-        tail_node->valid_mask |= (1 << i);
+        tail_node->valid_mask |= (1U << i);
     }
 
     // Reset tail
@@ -875,7 +878,9 @@ PyTypeObject TransientIntVectorType = {
 };
 
 static PyObject *IntVector_transient(IntVector *self, PyObject *Py_UNUSED(ignored)) {
-    TransientIntVector *t = PyObject_New(TransientIntVector, &TransientIntVectorType);
+    TransientIntVector *t =
+        (TransientIntVector *)TransientIntVectorType.tp_alloc(
+            &TransientIntVectorType, 0);
     if (!t) return NULL;
 
     t->id = PyObject_New(PyObject, &PdsSentinelType);
@@ -947,12 +952,21 @@ static int IntVector_init(IntVector *self, PyObject *args, PyObject *kwds) {
                     IntVector *nv = (IntVector *)new_vec;
                     Py_DECREF(self->root);
                     if (self->tail) free(self->tail);
+                    self->tail = NULL;
+                    self->tail_len = 0;
+                    self->tail_cap = 0;
                     self->cnt = nv->cnt;
                     self->shift = nv->shift;
                     self->root = nv->root;
                     Py_INCREF(self->root);
                     if (nv->tail && nv->tail_len > 0) {
                         self->tail = (int64_t *)malloc(nv->tail_len * sizeof(int64_t));
+                        if (!self->tail) {
+                            Py_DECREF(new_vec);
+                            Py_DECREF(iter);
+                            PyErr_NoMemory();
+                            return -1;
+                        }
                         memcpy(self->tail, nv->tail, nv->tail_len * sizeof(int64_t));
                         self->tail_len = nv->tail_len;
                         self->tail_cap = nv->tail_len;
@@ -984,12 +998,20 @@ static int IntVector_init(IntVector *self, PyObject *args, PyObject *kwds) {
         IntVector *nv = (IntVector *)new_vec;
         Py_DECREF(self->root);
         if (self->tail) free(self->tail);
+        self->tail = NULL;
+        self->tail_len = 0;
+        self->tail_cap = 0;
         self->cnt = nv->cnt;
         self->shift = nv->shift;
         self->root = nv->root;
         Py_INCREF(self->root);
         if (nv->tail && nv->tail_len > 0) {
             self->tail = (int64_t *)malloc(nv->tail_len * sizeof(int64_t));
+            if (!self->tail) {
+                Py_DECREF(new_vec);
+                PyErr_NoMemory();
+                return -1;
+            }
             memcpy(self->tail, nv->tail, nv->tail_len * sizeof(int64_t));
             self->tail_len = nv->tail_len;
             self->tail_cap = nv->tail_len;
@@ -1103,5 +1125,7 @@ PyObject *pds_vec_i64(PyObject *self, PyObject *args) {
         }
     }
 
-    return TransientIntVector_persistent(t, NULL);
+    PyObject *result = TransientIntVector_persistent(t, NULL);
+    Py_DECREF(t);
+    return result;
 }

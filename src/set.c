@@ -16,9 +16,21 @@ struct Set {
 PyTypeObject SetType;
 Set *EMPTY_SET = NULL;
 
+static int Set_traverse(Set *self, visitproc visit, void *arg) {
+    Py_VISIT(self->root);
+    Py_VISIT(self->transient_id);
+    return 0;
+}
+
+static int Set_clear(Set *self) {
+    Py_CLEAR(self->root);
+    Py_CLEAR(self->transient_id);
+    return 0;
+}
+
 static void Set_dealloc(Set *self) {
-    Py_XDECREF(self->root);
-    Py_XDECREF(self->transient_id);
+    PyObject_GC_UnTrack(self);
+    Set_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
@@ -220,8 +232,19 @@ struct SetIterator {
 
 PyTypeObject SetIteratorType;
 
+static int SetIterator_traverse(SetIterator *self, visitproc visit, void *arg) {
+    Py_VISIT(self->kv_iter);
+    return 0;
+}
+
+static int SetIterator_clear(SetIterator *self) {
+    Py_CLEAR(self->kv_iter);
+    return 0;
+}
+
 static void SetIterator_dealloc(SetIterator *self) {
-    Py_XDECREF(self->kv_iter);
+    PyObject_GC_UnTrack(self);
+    SetIterator_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
@@ -242,14 +265,18 @@ PyTypeObject SetIteratorType = {
     .tp_name = "spork_pds.SetIterator",
     .tp_basicsize = sizeof(SetIterator),
     .tp_dealloc = (destructor)SetIterator_dealloc,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)SetIterator_traverse,
+    .tp_clear = (inquiry)SetIterator_clear,
     .tp_iter = PyObject_SelfIter,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
     .tp_iternext = (iternextfunc)SetIterator_next,
 };
 
 static PyObject *Set_iter(Set *self) {
     if (self->root == NULL) {
-        return PyObject_GetIter(PyList_New(0));
+        return pds_empty_iterator();
     }
 
     PyObject *kv_iter;
@@ -263,7 +290,8 @@ static PyObject *Set_iter(Set *self) {
 
     if (!kv_iter) return NULL;
 
-    SetIterator *it = PyObject_New(SetIterator, &SetIteratorType);
+    SetIterator *it = (SetIterator *)SetIteratorType.tp_alloc(
+        &SetIteratorType, 0);
     if (!it) {
         Py_DECREF(kv_iter);
         return NULL;
@@ -995,6 +1023,7 @@ static PyObject *Set_to_seq(Set *self, PyObject *Py_UNUSED(ignored)) {
         Py_INCREF(new_cons->rest);
         new_cons->hash = 0;
         new_cons->hash_computed = 0;
+        new_cons->initialized = 1;
 
         result = new_cons;
     }
@@ -1086,12 +1115,16 @@ PyTypeObject SetType = {
     .tp_as_number = &Set_as_number,
     .tp_as_sequence = &Set_as_sequence,
     .tp_hash = (hashfunc)Set_hash,
-    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)Set_traverse,
+    .tp_clear = (inquiry)Set_clear,
     .tp_richcompare = (richcmpfunc)Set_richcompare,
     .tp_iter = (getiterfunc)Set_iter,
     .tp_methods = Set_methods,
     .tp_init = (initproc)Set_init,
+    .tp_alloc = PyType_GenericAlloc,
     .tp_new = Set_new,
+    .tp_free = PyObject_GC_Del,
 };
 
 // === TransientSet ===
@@ -1102,14 +1135,28 @@ struct TransientSet {
     PyObject *id;
 };
 
+static int TransientSet_traverse(
+    TransientSet *self, visitproc visit, void *arg) {
+    Py_VISIT(self->root);
+    Py_VISIT(self->id);
+    return 0;
+}
+
+static int TransientSet_clear_gc(TransientSet *self) {
+    Py_CLEAR(self->root);
+    Py_CLEAR(self->id);
+    return 0;
+}
+
 static void TransientSet_dealloc(TransientSet *self) {
-    Py_XDECREF(self->root);
-    Py_XDECREF(self->id);
+    PyObject_GC_UnTrack(self);
+    TransientSet_clear_gc(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static PyObject *Set_transient(Set *self, PyObject *Py_UNUSED(ignored)) {
-    TransientSet *t = PyObject_New(TransientSet, &TransientSetType);
+    TransientSet *t = (TransientSet *)TransientSetType.tp_alloc(
+        &TransientSetType, 0);
     if (!t) return NULL;
 
     t->id = PyObject_New(PyObject, &PdsSentinelType);
@@ -1304,7 +1351,7 @@ static PyObject *TransientSet_iter(TransientSet *self) {
 
     if (self->root == NULL) {
         // Return empty iterator
-        return PyObject_GetIter(PyTuple_New(0));
+        return pds_empty_iterator();
     }
 
     if (PyObject_TypeCheck(self->root, &BitmapIndexedNodeType)) {
@@ -1388,9 +1435,13 @@ PyTypeObject TransientSetType = {
     .tp_basicsize = sizeof(TransientSet),
     .tp_dealloc = (destructor)TransientSet_dealloc,
     .tp_as_sequence = &TransientSet_as_sequence,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)TransientSet_traverse,
+    .tp_clear = (inquiry)TransientSet_clear_gc,
     .tp_iter = (getiterfunc)TransientSet_iter,
     .tp_methods = TransientSet_methods,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
 };
 
 PyObject *pds_set(PyObject *self, PyObject *args) {
@@ -1409,7 +1460,8 @@ PyObject *pds_set(PyObject *self, PyObject *args) {
     if (!iter) return NULL;
 
     // Use transient for efficient building
-    TransientSet *t = PyObject_New(TransientSet, &TransientSetType);
+    TransientSet *t = (TransientSet *)TransientSetType.tp_alloc(
+        &TransientSetType, 0);
     if (!t) {
         Py_DECREF(iter);
         return NULL;

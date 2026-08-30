@@ -7,11 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_ATOMICS__)
-#include <stdatomic.h>
-#define HAVE_STDATOMIC 1
-#endif
-
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
@@ -74,6 +69,7 @@ typedef struct Cons {
     PyObject *rest;
     Py_hash_t hash;
     int hash_computed;
+    int initialized;
 } Cons;
 
 typedef struct RBNode RBNode;
@@ -92,6 +88,15 @@ extern PyTypeObject PdsSentinelType;
 extern PyObject *_MISSING;
 
 PyObject *Generic_class_getitem(PyObject *cls, PyObject *args);
+PyObject *pds_empty_iterator(void);
+
+static inline Py_hash_t
+pds_finalize_hash(Py_uhash_t hash)
+{
+    Py_hash_t result = (Py_hash_t)hash;
+    return result == -1 ? -2 : result;
+}
+
 int ctpop(unsigned int i);
 int mask_hash(Py_hash_t hash_val, int shift);
 unsigned int bitpos(Py_hash_t hash_val, int shift);

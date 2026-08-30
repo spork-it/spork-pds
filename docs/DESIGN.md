@@ -139,6 +139,10 @@ Pickle stores values and ordering configuration, not a promise about trie shape 
 
 ## Free-threaded CPython
 
-On free-threaded CPython 3.14+, the extension declares that it does not require the GIL. Persistent collection nodes are immutable after publication, which makes them suitable for sharing between readers.
+The extension can be imported by free-threaded CPython 3.14 builds, but it requests CPython's compatibility GIL. Internal nodes are structurally shared, while transient builders and lazy caches still rely on GIL serialization.
 
-This does not make arbitrary nested Python objects thread-safe, and it does not make transients safe for concurrent access. Applications remain responsible for the synchronization requirements of contained values and for keeping each transient under one owner's control.
+This means the package is compatible with free-threaded builds but does not currently provide parallel execution within extension operations. Arbitrary nested Python objects retain their own synchronization requirements, and each transient should remain under one owner's control.
+
+## Subinterpreters
+
+The extension declares isolated and per-interpreter-GIL subinterpreters unsupported because its static types and empty singleton aliases are process-wide. Legacy shared-GIL subinterpreter import and teardown are regression-tested for CPython configurations that explicitly bypass that compatibility check.

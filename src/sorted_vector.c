@@ -19,12 +19,27 @@ typedef struct RBNode {
 
 PyTypeObject RBNodeType;
 
+static int RBNode_traverse(RBNode *self, visitproc visit, void *arg) {
+    Py_VISIT(self->value);
+    Py_VISIT(self->sort_key);
+    Py_VISIT(self->left);
+    Py_VISIT(self->right);
+    Py_VISIT(self->edit);
+    return 0;
+}
+
+static int RBNode_clear(RBNode *self) {
+    Py_CLEAR(self->value);
+    Py_CLEAR(self->sort_key);
+    Py_CLEAR(self->left);
+    Py_CLEAR(self->right);
+    Py_CLEAR(self->edit);
+    return 0;
+}
+
 static void RBNode_dealloc(RBNode *self) {
-    Py_XDECREF(self->value);
-    Py_XDECREF(self->sort_key);
-    Py_XDECREF(self->left);
-    Py_XDECREF(self->right);
-    Py_XDECREF(self->edit);
+    PyObject_GC_UnTrack(self);
+    RBNode_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
@@ -39,7 +54,7 @@ static void RBNode_update_size(RBNode *node) {
 }
 
 static RBNode *RBNode_create(PyObject *value, PyObject *sort_key, unsigned char color, PyObject *edit) {
-    RBNode *node = PyObject_New(RBNode, &RBNodeType);
+    RBNode *node = (RBNode *)RBNodeType.tp_alloc(&RBNodeType, 0);
     if (!node) return NULL;
 
     Py_INCREF(value);
@@ -60,7 +75,7 @@ static RBNode *RBNode_create(PyObject *value, PyObject *sort_key, unsigned char 
 static RBNode *RBNode_clone(RBNode *node, PyObject *edit) {
     if (!node) return NULL;
 
-    RBNode *new_node = PyObject_New(RBNode, &RBNodeType);
+    RBNode *new_node = (RBNode *)RBNodeType.tp_alloc(&RBNodeType, 0);
     if (!new_node) return NULL;
 
     Py_INCREF(node->value);
@@ -103,7 +118,11 @@ PyTypeObject RBNodeType = {
     .tp_doc = "Red-Black Tree Node (internal)",
     .tp_basicsize = sizeof(RBNode),
     .tp_dealloc = (destructor)RBNode_dealloc,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)RBNode_traverse,
+    .tp_clear = (inquiry)RBNode_clear,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
 };
 
 // Compare two sort keys, returning -1, 0, or 1
@@ -238,9 +257,22 @@ static RBNode *RBNode_balance(RBNode *h, PyObject *edit) {
 
 PyTypeObject SortedVectorType;
 
+static int SortedVector_traverse(
+    SortedVector *self, visitproc visit, void *arg) {
+    Py_VISIT(self->root);
+    Py_VISIT(self->key_fn);
+    return 0;
+}
+
+static int SortedVector_clear(SortedVector *self) {
+    Py_CLEAR(self->root);
+    Py_CLEAR(self->key_fn);
+    return 0;
+}
+
 static void SortedVector_dealloc(SortedVector *self) {
-    Py_XDECREF(self->root);
-    Py_XDECREF(self->key_fn);
+    PyObject_GC_UnTrack(self);
+    SortedVector_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
@@ -318,7 +350,8 @@ static PyObject *SortedVector_conj(SortedVector *self, PyObject *value) {
     }
 
     // Create new SortedVector
-    SortedVector *result = PyObject_New(SortedVector, &SortedVectorType);
+    SortedVector *result = (SortedVector *)SortedVectorType.tp_alloc(
+        &SortedVectorType, 0);
     if (!result) {
         Py_XDECREF(new_root);
         return NULL;
@@ -552,20 +585,42 @@ typedef struct SortedVectorIterator {
 
 PyTypeObject SortedVectorIteratorType;
 
-static void SortedVectorIterator_dealloc(SortedVectorIterator *self) {
+static int SortedVectorIterator_traverse(
+    SortedVectorIterator *self, visitproc visit, void *arg) {
     for (Py_ssize_t i = 0; i < self->stack_size; i++) {
-        Py_XDECREF(self->stack[i]);
+        Py_VISIT(self->stack[i]);
+    }
+    return 0;
+}
+
+static int SortedVectorIterator_clear(SortedVectorIterator *self) {
+    for (Py_ssize_t i = 0; i < self->stack_size; i++) {
+        Py_CLEAR(self->stack[i]);
     }
     PyMem_Free(self->stack);
+    self->stack = NULL;
+    self->stack_size = 0;
+    self->stack_capacity = 0;
+    return 0;
+}
+
+static void SortedVectorIterator_dealloc(SortedVectorIterator *self) {
+    PyObject_GC_UnTrack(self);
+    SortedVectorIterator_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static void SortedVectorIterator_push_left(SortedVectorIterator *self, RBNode *node) {
+static int SortedVectorIterator_push_left(
+    SortedVectorIterator *self, RBNode *node) {
     while (node) {
         if (self->stack_size >= self->stack_capacity) {
             Py_ssize_t new_cap = self->stack_capacity * 2;
-            RBNode **new_stack = PyMem_Realloc(self->stack, new_cap * sizeof(RBNode *));
-            if (!new_stack) return;
+            RBNode **new_stack = PyMem_Realloc(
+                self->stack, new_cap * sizeof(RBNode *));
+            if (!new_stack) {
+                PyErr_NoMemory();
+                return -1;
+            }
             self->stack = new_stack;
             self->stack_capacity = new_cap;
         }
@@ -573,6 +628,7 @@ static void SortedVectorIterator_push_left(SortedVectorIterator *self, RBNode *n
         self->stack[self->stack_size++] = node;
         node = node->left;
     }
+    return 0;
 }
 
 static PyObject *SortedVectorIterator_next(SortedVectorIterator *self) {
@@ -585,7 +641,11 @@ static PyObject *SortedVectorIterator_next(SortedVectorIterator *self) {
     Py_INCREF(value);
 
     // Push left spine of right subtree
-    SortedVectorIterator_push_left(self, node->right);
+    if (SortedVectorIterator_push_left(self, node->right) < 0) {
+        Py_DECREF(value);
+        Py_DECREF(node);
+        return NULL;
+    }
 
     Py_DECREF(node);
     return value;
@@ -596,13 +656,19 @@ PyTypeObject SortedVectorIteratorType = {
     .tp_name = "spork_pds.SortedVectorIterator",
     .tp_basicsize = sizeof(SortedVectorIterator),
     .tp_dealloc = (destructor)SortedVectorIterator_dealloc,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)SortedVectorIterator_traverse,
+    .tp_clear = (inquiry)SortedVectorIterator_clear,
     .tp_iter = PyObject_SelfIter,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
     .tp_iternext = (iternextfunc)SortedVectorIterator_next,
 };
 
 static PyObject *SortedVector_iter(SortedVector *self) {
-    SortedVectorIterator *iter = PyObject_New(SortedVectorIterator, &SortedVectorIteratorType);
+    SortedVectorIterator *iter =
+        (SortedVectorIterator *)SortedVectorIteratorType.tp_alloc(
+            &SortedVectorIteratorType, 0);
     if (!iter) return NULL;
 
     // Initial capacity based on expected tree depth
@@ -614,7 +680,10 @@ static PyObject *SortedVector_iter(SortedVector *self) {
     }
     iter->stack_size = 0;
 
-    SortedVectorIterator_push_left(iter, self->root);
+    if (SortedVectorIterator_push_left(iter, self->root) < 0) {
+        Py_DECREF(iter);
+        return NULL;
+    }
 
     return (PyObject *)iter;
 }
@@ -673,8 +742,8 @@ static PyObject *SortedVector_repr(SortedVector *self) {
 // === SortedVector hash ===
 
 static Py_hash_t SortedVector_hash(SortedVector *self) {
-    Py_hash_t hash = 0x345678;
-    Py_hash_t mult = 1000003;
+    Py_uhash_t hash = 0x345678;
+    Py_uhash_t mult = 1000003;
 
     PyObject *iter = SortedVector_iter(self);
     if (!iter) return -1;
@@ -687,14 +756,13 @@ static Py_hash_t SortedVector_hash(SortedVector *self) {
             Py_DECREF(iter);
             return -1;
         }
-        hash = (hash ^ item_hash) * mult;
-        mult += 82520 + 2 * self->cnt;
+        hash = (hash ^ (Py_uhash_t)item_hash) * mult;
+        mult += (Py_uhash_t)82520 + (Py_uhash_t)2 * (Py_uhash_t)self->cnt;
     }
     Py_DECREF(iter);
 
-    hash += 97531;
-    if (hash == -1) hash = -2;
-    return hash;
+    hash += (Py_uhash_t)97531;
+    return pds_finalize_hash(hash);
 }
 
 // === SortedVector equality ===
@@ -979,7 +1047,8 @@ static PyObject *SortedVector_disj(SortedVector *self, PyObject *value) {
         new_root->color = RB_BLACK;
     }
 
-    SortedVector *result = PyObject_New(SortedVector, &SortedVectorType);
+    SortedVector *result = (SortedVector *)SortedVectorType.tp_alloc(
+        &SortedVectorType, 0);
     if (!result) {
         Py_XDECREF(new_root);
         return NULL;
@@ -1059,10 +1128,24 @@ typedef struct TransientSortedVector {
 
 PyTypeObject TransientSortedVectorType;
 
+static int TransientSortedVector_traverse(
+    TransientSortedVector *self, visitproc visit, void *arg) {
+    Py_VISIT(self->root);
+    Py_VISIT(self->key_fn);
+    Py_VISIT(self->id);
+    return 0;
+}
+
+static int TransientSortedVector_clear_gc(TransientSortedVector *self) {
+    Py_CLEAR(self->root);
+    Py_CLEAR(self->key_fn);
+    Py_CLEAR(self->id);
+    return 0;
+}
+
 static void TransientSortedVector_dealloc(TransientSortedVector *self) {
-    Py_XDECREF(self->root);
-    Py_XDECREF(self->key_fn);
-    Py_XDECREF(self->id);
+    PyObject_GC_UnTrack(self);
+    TransientSortedVector_clear_gc(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
@@ -1073,7 +1156,9 @@ static void TransientSortedVector_ensure_editable(TransientSortedVector *self) {
 }
 
 static PyObject *SortedVector_transient(SortedVector *self, PyObject *Py_UNUSED(ignored)) {
-    TransientSortedVector *t = PyObject_New(TransientSortedVector, &TransientSortedVectorType);
+    TransientSortedVector *t =
+        (TransientSortedVector *)TransientSortedVectorType.tp_alloc(
+            &TransientSortedVectorType, 0);
     if (!t) return NULL;
 
     t->id = PyObject_New(PyObject, &PdsSentinelType);
@@ -1167,7 +1252,8 @@ static PyObject *TransientSortedVector_persistent(TransientSortedVector *self, P
     TransientSortedVector_ensure_editable(self);
     if (PyErr_Occurred()) return NULL;
 
-    SortedVector *result = PyObject_New(SortedVector, &SortedVectorType);
+    SortedVector *result = (SortedVector *)SortedVectorType.tp_alloc(
+        &SortedVectorType, 0);
     if (!result) return NULL;
 
     result->root = self->root;
@@ -1207,8 +1293,12 @@ PyTypeObject TransientSortedVectorType = {
     .tp_basicsize = sizeof(TransientSortedVector),
     .tp_dealloc = (destructor)TransientSortedVector_dealloc,
     .tp_as_sequence = &TransientSortedVector_as_sequence,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)TransientSortedVector_traverse,
+    .tp_clear = (inquiry)TransientSortedVector_clear_gc,
     .tp_methods = TransientSortedVector_methods,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
 };
 
 // === SortedVector methods table ===
@@ -1376,12 +1466,16 @@ PyTypeObject SortedVectorType = {
     .tp_as_sequence = &SortedVector_as_sequence,
     .tp_as_mapping = &SortedVector_as_mapping,
     .tp_hash = (hashfunc)SortedVector_hash,
-    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)SortedVector_traverse,
+    .tp_clear = (inquiry)SortedVector_clear,
     .tp_iter = (getiterfunc)SortedVector_iter,
     .tp_richcompare = (richcmpfunc)SortedVector_richcompare,
     .tp_methods = SortedVector_methods,
+    .tp_alloc = PyType_GenericAlloc,
     .tp_new = SortedVector_new,
     .tp_init = (initproc)SortedVector_init,
+    .tp_free = PyObject_GC_Del,
 };
 
 // Empty sorted vector constant

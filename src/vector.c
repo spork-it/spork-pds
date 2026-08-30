@@ -3,16 +3,31 @@
 // === VectorNode ===
 PyTypeObject VectorNodeType;
 
-static void VectorNode_dealloc(VectorNode *self) {
+static int VectorNode_traverse(VectorNode *self, visitproc visit, void *arg) {
     for (int i = 0; i < WIDTH; i++) {
-        Py_XDECREF(self->array[i]);
+        Py_VISIT(self->array[i]);
     }
-    Py_XDECREF(self->transient_id);
+    Py_VISIT(self->transient_id);
+    return 0;
+}
+
+static int VectorNode_clear(VectorNode *self) {
+    for (int i = 0; i < WIDTH; i++) {
+        Py_CLEAR(self->array[i]);
+    }
+    Py_CLEAR(self->transient_id);
+    return 0;
+}
+
+static void VectorNode_dealloc(VectorNode *self) {
+    PyObject_GC_UnTrack(self);
+    VectorNode_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 VectorNode *VectorNode_create(PyObject *transient_id) {
-    VectorNode *node = PyObject_New(VectorNode, &VectorNodeType);
+    VectorNode *node = (VectorNode *)VectorNodeType.tp_alloc(
+        &VectorNodeType, 0);
     if (!node) return NULL;
 
     for (int i = 0; i < WIDTH; i++) {
@@ -43,7 +58,11 @@ PyTypeObject VectorNodeType = {
     .tp_name = "spork_pds.VectorNode",
     .tp_basicsize = sizeof(VectorNode),
     .tp_dealloc = (destructor)VectorNode_dealloc,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)VectorNode_traverse,
+    .tp_clear = (inquiry)VectorNode_clear,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
 };
 
 // Global empty node
@@ -53,10 +72,23 @@ VectorNode *EMPTY_NODE = NULL;
 PyTypeObject VectorType;
 Vector *EMPTY_VECTOR = NULL;
 
+static int Vector_traverse(Vector *self, visitproc visit, void *arg) {
+    Py_VISIT(self->root);
+    Py_VISIT(self->tail);
+    Py_VISIT(self->transient_id);
+    return 0;
+}
+
+static int Vector_clear(Vector *self) {
+    Py_CLEAR(self->root);
+    Py_CLEAR(self->tail);
+    Py_CLEAR(self->transient_id);
+    return 0;
+}
+
 static void Vector_dealloc(Vector *self) {
-    Py_XDECREF(self->root);
-    Py_XDECREF(self->tail);
-    Py_XDECREF(self->transient_id);
+    PyObject_GC_UnTrack(self);
+    Vector_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
@@ -68,6 +100,10 @@ static PyObject *Vector_new(PyTypeObject *type, PyObject *args, PyObject *kwds) 
         self->root = EMPTY_NODE;
         Py_INCREF(EMPTY_NODE);
         self->tail = PyTuple_New(0);
+        if (self->tail == NULL) {
+            Py_DECREF(self);
+            return NULL;
+        }
         self->hash = 0;
         self->hash_computed = 0;
         self->transient_id = NULL;
@@ -660,7 +696,7 @@ static Py_hash_t Vector_hash(Vector *self) {
         return self->hash;
     }
 
-    Py_hash_t h = 0;
+    Py_uhash_t h = 0;
     for (Py_ssize_t i = 0; i < self->cnt; i++) {
         PyObject *arr = Vector_array_for(self, i);
         if (!arr) return -1;
@@ -670,12 +706,12 @@ static Py_hash_t Vector_hash(Vector *self) {
         Py_DECREF(arr);
 
         if (item_hash == -1) return -1;
-        h = 31 * h + item_hash;
+        h = (Py_uhash_t)31 * h + (Py_uhash_t)item_hash;
     }
 
-    self->hash = h;
+    self->hash = pds_finalize_hash(h);
     self->hash_computed = 1;
-    return h;
+    return self->hash;
 }
 
 static PyObject *Vector_richcompare(Vector *self, PyObject *other, int op) {
@@ -803,6 +839,7 @@ static PyObject *Vector_to_seq(Vector *self, PyObject *Py_UNUSED(ignored)) {
             Py_INCREF(new_cons->rest);
             new_cons->hash = 0;
             new_cons->hash_computed = 0;
+            new_cons->initialized = 1;
 
             result = new_cons;
         }
@@ -1003,14 +1040,26 @@ typedef struct {
 
 PyTypeObject VectorIteratorType;
 
+static int VectorIterator_traverse(VectorIterator *self, visitproc visit, void *arg) {
+    Py_VISIT(self->vec);
+    Py_VISIT(self->cached_node);
+    return 0;
+}
+
+static int VectorIterator_clear(VectorIterator *self) {
+    Py_CLEAR(self->vec);
+    Py_CLEAR(self->cached_node);
+    return 0;
+}
+
 static void VectorIterator_dealloc(VectorIterator *self) {
-    Py_XDECREF(self->vec);
-    Py_XDECREF(self->cached_node);
+    PyObject_GC_UnTrack(self);
+    VectorIterator_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static PyObject *VectorIterator_next(VectorIterator *self) {
-    if (self->index >= self->vec->cnt) {
+    if (self->vec == NULL || self->index >= self->vec->cnt) {
         return NULL;
     }
 
@@ -1041,13 +1090,18 @@ PyTypeObject VectorIteratorType = {
     .tp_name = "spork_pds.VectorIterator",
     .tp_basicsize = sizeof(VectorIterator),
     .tp_dealloc = (destructor)VectorIterator_dealloc,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)VectorIterator_traverse,
+    .tp_clear = (inquiry)VectorIterator_clear,
     .tp_iter = PyObject_SelfIter,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
     .tp_iternext = (iternextfunc)VectorIterator_next,
 };
 
 static PyObject *Vector_iter(Vector *self) {
-    VectorIterator *it = PyObject_New(VectorIterator, &VectorIteratorType);
+    VectorIterator *it = (VectorIterator *)VectorIteratorType.tp_alloc(
+        &VectorIteratorType, 0);
     if (!it) return NULL;
 
     it->vec = self;
@@ -1125,12 +1179,16 @@ PyTypeObject VectorType = {
     .tp_as_sequence = &Vector_as_sequence,
     .tp_as_mapping = &Vector_as_mapping,
     .tp_hash = (hashfunc)Vector_hash,
-    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)Vector_traverse,
+    .tp_clear = (inquiry)Vector_clear,
     .tp_richcompare = (richcmpfunc)Vector_richcompare,
     .tp_iter = (getiterfunc)Vector_iter,
     .tp_methods = Vector_methods,
     .tp_init = (initproc)Vector_init,
+    .tp_alloc = PyType_GenericAlloc,
     .tp_new = Vector_new,
+    .tp_free = PyObject_GC_Del,
 };
 
 // === TransientVector ===
@@ -1143,15 +1201,29 @@ typedef struct TransientVector {
     PyObject *id;
 } TransientVector;
 
+static int TransientVector_traverse(TransientVector *self, visitproc visit, void *arg) {
+    Py_VISIT(self->root);
+    Py_VISIT(self->tail);
+    Py_VISIT(self->id);
+    return 0;
+}
+
+static int TransientVector_clear(TransientVector *self) {
+    Py_CLEAR(self->root);
+    Py_CLEAR(self->tail);
+    Py_CLEAR(self->id);
+    return 0;
+}
+
 static void TransientVector_dealloc(TransientVector *self) {
-    Py_XDECREF(self->root);
-    Py_XDECREF(self->tail);
-    Py_XDECREF(self->id);
+    PyObject_GC_UnTrack(self);
+    TransientVector_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static PyObject *Vector_transient(Vector *self, PyObject *Py_UNUSED(ignored)) {
-    TransientVector *t = PyObject_New(TransientVector, &TransientVectorType);
+    TransientVector *t = (TransientVector *)TransientVectorType.tp_alloc(
+        &TransientVectorType, 0);
     if (!t) return NULL;
 
     t->id = PyObject_New(PyObject, &PdsSentinelType);
@@ -1674,12 +1746,27 @@ typedef struct {
 
 PyTypeObject TransientVectorIteratorType;
 
+static int TransientVectorIterator_traverse(
+    TransientVectorIterator *self, visitproc visit, void *arg) {
+    Py_VISIT(self->tvec);
+    return 0;
+}
+
+static int TransientVectorIterator_clear(TransientVectorIterator *self) {
+    Py_CLEAR(self->tvec);
+    return 0;
+}
+
 static void TransientVectorIterator_dealloc(TransientVectorIterator *self) {
-    Py_XDECREF(self->tvec);
+    PyObject_GC_UnTrack(self);
+    TransientVectorIterator_clear(self);
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
 static PyObject *TransientVectorIterator_next(TransientVectorIterator *self) {
+    if (self->tvec == NULL) {
+        return NULL;
+    }
     if (self->tvec->id == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Transient used after persistent() call");
         return NULL;
@@ -1699,8 +1786,12 @@ PyTypeObject TransientVectorIteratorType = {
     .tp_name = "spork_pds.TransientVectorIterator",
     .tp_basicsize = sizeof(TransientVectorIterator),
     .tp_dealloc = (destructor)TransientVectorIterator_dealloc,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)TransientVectorIterator_traverse,
+    .tp_clear = (inquiry)TransientVectorIterator_clear,
     .tp_iter = PyObject_SelfIter,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
     .tp_iternext = (iternextfunc)TransientVectorIterator_next,
 };
 
@@ -1708,7 +1799,9 @@ static PyObject *TransientVector_iter(TransientVector *self) {
     TransientVector_ensure_editable(self);
     if (PyErr_Occurred()) return NULL;
 
-    TransientVectorIterator *it = PyObject_New(TransientVectorIterator, &TransientVectorIteratorType);
+    TransientVectorIterator *it =
+        (TransientVectorIterator *)TransientVectorIteratorType.tp_alloc(
+            &TransientVectorIteratorType, 0);
     if (!it) return NULL;
 
     it->tvec = self;
@@ -1872,9 +1965,13 @@ PyTypeObject TransientVectorType = {
     .tp_dealloc = (destructor)TransientVector_dealloc,
     .tp_as_sequence = &TransientVector_as_sequence,
     .tp_as_mapping = &TransientVector_as_mapping,
-    .tp_flags = Py_TPFLAGS_DEFAULT,
+    .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+    .tp_traverse = (traverseproc)TransientVector_traverse,
+    .tp_clear = (inquiry)TransientVector_clear,
     .tp_iter = (getiterfunc)TransientVector_iter,
     .tp_methods = TransientVector_methods,
+    .tp_alloc = PyType_GenericAlloc,
+    .tp_free = PyObject_GC_Del,
 };
 
 PyObject *pds_vec(PyObject *self, PyObject *args) {
@@ -1921,7 +2018,9 @@ PyObject *pds_vec(PyObject *self, PyObject *args) {
                     return NULL;
                 }
 
-                return TransientVector_persistent(t, NULL);
+                PyObject *result = TransientVector_persistent(t, NULL);
+                Py_DECREF(t);
+                return result;
             }
         }
     }
@@ -1940,5 +2039,7 @@ PyObject *pds_vec(PyObject *self, PyObject *args) {
         Py_DECREF(result);
     }
 
-    return TransientVector_persistent(t, NULL);
+    PyObject *result = TransientVector_persistent(t, NULL);
+    Py_DECREF(t);
+    return result;
 }

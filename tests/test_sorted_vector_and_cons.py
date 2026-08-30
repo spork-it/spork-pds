@@ -154,6 +154,16 @@ def test_cons_properties_iteration_and_prepend():
         cons(1, None, None)
 
 
+def test_cons_cannot_be_reinitialized():
+    value = Cons(1, None)
+
+    with pytest.raises(TypeError, match="cannot be reinitialized"):
+        Cons.__init__(value, 2, None)
+
+    assert value.first == 1
+    assert value.rest is None
+
+
 def test_cons_comparison_and_hash_errors():
     value = cons(1, cons(2))
 

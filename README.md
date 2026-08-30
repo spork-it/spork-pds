@@ -17,7 +17,7 @@ The package is the standalone home of the persistent data structures originally 
 - `DoubleVector` and `IntVector`: specialized float64 and int64 vectors with the read-only buffer protocol
 - Transient variants for efficient batches of controlled mutation
 - Structural ABC integration, hashing, iteration, generic aliases, and pickle support
-- CPython 3.10+ support, including free-threaded CPython 3.14 builds
+- CPython 3.10+ support, including free-threaded CPython 3.14 builds via its compatibility GIL
 
 ## Installation
 

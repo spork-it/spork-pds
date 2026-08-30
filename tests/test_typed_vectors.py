@@ -115,6 +115,32 @@ def test_large_typed_vectors_cross_trie_boundaries():
     assert memoryview(integers).tolist() == list(range(1100))
 
 
+@pytest.mark.parametrize(
+    ("vector_type", "convert"),
+    [(DoubleVector, float), (IntVector, int)],
+)
+def test_large_typed_vectors_keep_shared_nodes_alive(vector_type, convert):
+    size = 2200
+    expected = [convert(value) for value in range(size)]
+    original = vector_type(expected)
+
+    left = original.conj(convert(size))
+    right = original.conj(convert(-1))
+    del original
+
+    assert list(left) == expected + [convert(size)]
+    assert list(right) == expected + [convert(-1)]
+
+    builder = left.transient()
+    for value in range(size + 1, size + 400):
+        builder.conj_mut(convert(value))
+    result = builder.persistent()
+    del builder, left
+
+    assert list(right) == expected + [convert(-1)]
+    assert list(result) == [convert(value) for value in range(size + 400)]
+
+
 def test_typed_vector_transients_and_invalidation():
     original_doubles = vec_f64(*range(40))
     double_transient = original_doubles.transient()
@@ -142,6 +168,17 @@ def test_typed_vector_transients_and_invalidation():
     ):
         with pytest.raises(RuntimeError):
             operation()
+
+
+@pytest.mark.parametrize("vector_type", [DoubleVector, IntVector])
+def test_typed_vector_partial_construction_is_safe(vector_type):
+    def failing_values():
+        yield 1
+        yield 2
+        raise RuntimeError("iteration failed")
+
+    with pytest.raises(RuntimeError, match="iteration failed"):
+        vector_type(failing_values())
 
 
 def test_empty_typed_vector_buffers_and_read_only_enforcement():

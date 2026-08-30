@@ -2,6 +2,13 @@
 
 All notable changes to `spork-pds` will be documented here.
 
+## Unreleased
+
+- Integrate object-bearing collections, internal nodes, transients, and iterators with Python's cyclic garbage collector.
+- Fix typed-vector node ownership across structurally shared versions.
+- Harden singleton, temporary-builder, iterator, allocation, and hash-overflow behavior.
+- Use the compatibility GIL on free-threaded CPython builds until mutable extension state is fully synchronized.
+
 ## 0.1.3
 
 - Split the native extension into focused C translation units under `src/`.
