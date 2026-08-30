@@ -11,6 +11,20 @@
 #include <intrin.h>
 #endif
 
+/*
+ * Object critical sections were added in CPython 3.13.  They lock the
+ * object's per-object mutex in free-threaded builds and are no-ops when the
+ * GIL is enabled.  Older supported CPython versions are always GIL-enabled,
+ * so use a lexical no-op there as well.
+ */
+#if PY_VERSION_HEX >= 0x030D0000
+#define PDS_BEGIN_CRITICAL_SECTION(op) Py_BEGIN_CRITICAL_SECTION(op)
+#define PDS_END_CRITICAL_SECTION() Py_END_CRITICAL_SECTION()
+#else
+#define PDS_BEGIN_CRITICAL_SECTION(op) { (void)(op)
+#define PDS_END_CRITICAL_SECTION() }
+#endif
+
 /* A free-threaded CPython object becomes immortal above UINT32_MAX. */
 #if PY_VERSION_HEX >= 0x030D0000 && defined(Py_GIL_DISABLED)
 #define PDS_SINGLETONS_ARE_IMMORTAL 1

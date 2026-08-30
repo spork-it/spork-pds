@@ -692,8 +692,18 @@ static PyObject *Vector_multiply(PyObject *left, PyObject *right) {
 }
 
 static Py_hash_t Vector_hash(Vector *self) {
-    if (self->hash_computed) {
-        return self->hash;
+    Py_hash_t cached_hash = 0;
+    int hash_computed;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    hash_computed = self->hash_computed;
+    if (hash_computed) {
+        cached_hash = self->hash;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    if (hash_computed) {
+        return cached_hash;
     }
 
     Py_uhash_t h = 0;
@@ -709,9 +719,15 @@ static Py_hash_t Vector_hash(Vector *self) {
         h = (Py_uhash_t)31 * h + (Py_uhash_t)item_hash;
     }
 
-    self->hash = pds_finalize_hash(h);
-    self->hash_computed = 1;
-    return self->hash;
+    Py_hash_t computed_hash = pds_finalize_hash(h);
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (!self->hash_computed) {
+        self->hash = computed_hash;
+        self->hash_computed = 1;
+    }
+    cached_hash = self->hash;
+    PDS_END_CRITICAL_SECTION();
+    return cached_hash;
 }
 
 static PyObject *Vector_richcompare(Vector *self, PyObject *other, int op) {

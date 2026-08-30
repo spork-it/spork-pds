@@ -1,6 +1,7 @@
 from collections.abc import Mapping, MutableMapping, MutableSequence, MutableSet
 from collections.abc import Sequence, Set as AbstractSet
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 import subprocess
 import sys
 import sysconfig
@@ -105,6 +106,36 @@ def test_persistent_types_support_generic_aliases():
     for alias, origin, args in aliases:
         assert get_origin(alias) is origin
         assert get_args(alias) == args
+
+
+def test_concurrent_first_hash_publication():
+    cons_value = None
+    for value in reversed(range(512)):
+        cons_value = pds.cons(value, cons_value)
+
+    cached_values = (
+        cons_value,
+        pds.Vector(range(2048)),
+        pds.Map((value, value * 2) for value in range(512)),
+        pds.Set(range(512)),
+        pds.DoubleVector(range(2048)),
+        pds.IntVector(range(2048)),
+    )
+    worker_count = 8
+    barriers = [Barrier(worker_count) for _ in cached_values]
+
+    def compute_hashes(_worker_id):
+        results = []
+        for barrier, value in zip(barriers, cached_values, strict=True):
+            barrier.wait(timeout=10)
+            results.append(hash(value))
+        return tuple(results)
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        results = list(executor.map(compute_hashes, range(worker_count)))
+
+    assert results == [results[0]] * worker_count
+    assert tuple(hash(value) for value in cached_values) == results[0]
 
 
 def test_concurrent_reads_and_independent_transients():

@@ -711,8 +711,18 @@ static PyObject *Set_xor(PyObject *left, PyObject *right) {
 }
 
 static Py_hash_t Set_hash(Set *self) {
-    if (self->hash_computed) {
-        return self->hash;
+    Py_hash_t cached_hash = 0;
+    int hash_computed;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    hash_computed = self->hash_computed;
+    if (hash_computed) {
+        cached_hash = self->hash;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    if (hash_computed) {
+        return cached_hash;
     }
 
     // Use XOR of element hashes for order-independent hash
@@ -739,9 +749,14 @@ static Py_hash_t Set_hash(Set *self) {
     // Avoid returning -1 which signals error
     if (h == -1) h = -2;
 
-    self->hash = h;
-    self->hash_computed = 1;
-    return h;
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (!self->hash_computed) {
+        self->hash = h;
+        self->hash_computed = 1;
+    }
+    cached_hash = self->hash;
+    PDS_END_CRITICAL_SECTION();
+    return cached_hash;
 }
 
 static PyObject *Set_richcompare(Set *self, PyObject *other, int op) {

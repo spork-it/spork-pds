@@ -97,8 +97,18 @@ static Py_ssize_t Cons_length(Cons *self) {
 }
 
 static Py_hash_t Cons_hash(Cons *self) {
-    if (self->hash_computed) {
-        return self->hash;
+    Py_hash_t cached_hash = 0;
+    int hash_computed;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    hash_computed = self->hash_computed;
+    if (hash_computed) {
+        cached_hash = self->hash;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    if (hash_computed) {
+        return cached_hash;
     }
 
     Py_uhash_t h = 0;
@@ -113,9 +123,15 @@ static Py_hash_t Cons_hash(Cons *self) {
         curr = c->rest;
     }
 
-    self->hash = pds_finalize_hash(h);
-    self->hash_computed = 1;
-    return self->hash;
+    Py_hash_t computed_hash = pds_finalize_hash(h);
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (!self->hash_computed) {
+        self->hash = computed_hash;
+        self->hash_computed = 1;
+    }
+    cached_hash = self->hash;
+    PDS_END_CRITICAL_SECTION();
+    return cached_hash;
 }
 
 static PyObject *Cons_richcompare(Cons *self, PyObject *other, int op) {

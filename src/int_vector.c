@@ -468,8 +468,18 @@ static PyObject *IntVector_repr(IntVector *self) {
 }
 
 static Py_hash_t IntVector_hash(IntVector *self) {
-    if (self->hash_computed) {
-        return self->hash;
+    Py_hash_t cached_hash = 0;
+    int hash_computed;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    hash_computed = self->hash_computed;
+    if (hash_computed) {
+        cached_hash = self->hash;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    if (hash_computed) {
+        return cached_hash;
     }
 
     Py_uhash_t h = 0;
@@ -480,15 +490,25 @@ static Py_hash_t IntVector_hash(IntVector *self) {
         h = (Py_uhash_t)31 * h + (Py_uhash_t)item_hash;
     }
 
-    self->hash = pds_finalize_hash(h);
-    self->hash_computed = 1;
-    return self->hash;
+    Py_hash_t computed_hash = pds_finalize_hash(h);
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (!self->hash_computed) {
+        self->hash = computed_hash;
+        self->hash_computed = 1;
+    }
+    cached_hash = self->hash;
+    PDS_END_CRITICAL_SECTION();
+    return cached_hash;
 }
 
 // Buffer Protocol for IntVector
 static int IntVector_flatten(IntVector *self) {
-    /* The compatibility GIL serializes initialization of this lazy cache. */
-    if (self->flat_buffer_cache != NULL) {
+    int cache_initialized;
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    cache_initialized = self->flat_buffer_cache != NULL;
+    PDS_END_CRITICAL_SECTION();
+
+    if (cache_initialized) {
         return 0;
     }
 
@@ -510,7 +530,13 @@ static int IntVector_flatten(IntVector *self) {
         }
     }
 
-    self->flat_buffer_cache = buffer;
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->flat_buffer_cache == NULL) {
+        self->flat_buffer_cache = buffer;
+        buffer = NULL;
+    }
+    PDS_END_CRITICAL_SECTION();
+    free(buffer);
     return 0;
 }
 
