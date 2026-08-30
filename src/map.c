@@ -562,6 +562,66 @@ static PyObject *Map_to_seq(Map *self, PyObject *Py_UNUSED(ignored)) {
     return (PyObject *)result;
 }
 
+/*
+ * Extract an externally supplied pair into strong references.  In particular,
+ * a list pair may be mutated by another thread while hashing the key, so
+ * borrowed PyList_GET_ITEM pointers cannot escape the list access.
+ */
+static int Map_unpack_pair(
+    PyObject *item, PyObject **key_out, PyObject **val_out) {
+    PyObject *key = NULL;
+    PyObject *val = NULL;
+
+    *key_out = NULL;
+    *val_out = NULL;
+
+    if (PyObject_TypeCheck(item, &VectorType)) {
+        Vector *vec = (Vector *)item;
+        if (vec->cnt != 2) {
+            PyErr_SetString(
+                PyExc_ValueError,
+                "Map merge requires (key, value) pairs");
+            return -1;
+        }
+        key = Vector_nth_impl(vec, 0, NULL);
+        if (!key) return -1;
+        val = Vector_nth_impl(vec, 1, NULL);
+        if (!val) {
+            Py_DECREF(key);
+            return -1;
+        }
+    } else {
+        if (!PySequence_Check(item)) {
+            PyErr_SetString(
+                PyExc_ValueError,
+                "Map merge requires (key, value) pairs");
+            return -1;
+        }
+
+        Py_ssize_t size = PySequence_Size(item);
+        if (size < 0) return -1;
+        if (size != 2) {
+            PyErr_SetString(
+                PyExc_ValueError,
+                "Map merge requires (key, value) pairs");
+            return -1;
+        }
+
+        /* PySequence_GetItem returns strong references on CPython 3.10+. */
+        key = PySequence_GetItem(item, 0);
+        if (!key) return -1;
+        val = PySequence_GetItem(item, 1);
+        if (!val) {
+            Py_DECREF(key);
+            return -1;
+        }
+    }
+
+    *key_out = key;
+    *val_out = val;
+    return 0;
+}
+
 // Map merge operation (|)
 static PyObject *Map_or(PyObject *left, PyObject *right) {
     if (!PyObject_TypeCheck(left, &MapType)) {
@@ -658,79 +718,19 @@ static PyObject *Map_or(PyObject *left, PyObject *right) {
 
     PyObject *item;
     while ((item = PyIter_Next(items_iter)) != NULL) {
-        PyObject *key, *val;
-
-        // Handle tuples, lists, Vectors, and other sequences
-        if (PyTuple_Check(item) && PyTuple_GET_SIZE(item) == 2) {
-            key = PyTuple_GET_ITEM(item, 0);
-            val = PyTuple_GET_ITEM(item, 1);
-        } else if (PyList_Check(item) && PyList_GET_SIZE(item) == 2) {
-            key = PyList_GET_ITEM(item, 0);
-            val = PyList_GET_ITEM(item, 1);
-        } else if (PyObject_TypeCheck(item, &VectorType)) {
-            // Handle our Vector type directly using internal C API
-            Vector *vec = (Vector *)item;
-            if (vec->cnt != 2) {
-                PyErr_SetString(PyExc_ValueError, "Map merge requires (key, value) pairs");
-                Py_DECREF(item);
-                Py_DECREF(items_iter);
-                Py_DECREF(t);
-                return NULL;
-            }
-            key = Vector_nth_impl(vec, 0, NULL);
-            val = Vector_nth_impl(vec, 1, NULL);
-            if (!key || !val) {
-                Py_XDECREF(key);
-                Py_XDECREF(val);
-                Py_DECREF(item);
-                Py_DECREF(items_iter);
-                Py_DECREF(t);
-                return NULL;
-            }
-            PyObject *res = TransientMap_assoc_mut_impl(t, key, val);
-            Py_DECREF(key);
-            Py_DECREF(val);
-            Py_DECREF(item);
-            if (!res) {
-                Py_DECREF(items_iter);
-                Py_DECREF(t);
-                return NULL;
-            }
-            Py_DECREF(res);
-            continue;
-        } else if (PySequence_Check(item) && PySequence_Size(item) == 2) {
-            key = PySequence_GetItem(item, 0);
-            val = PySequence_GetItem(item, 1);
-            if (!key || !val) {
-                Py_XDECREF(key);
-                Py_XDECREF(val);
-                Py_DECREF(item);
-                Py_DECREF(items_iter);
-                Py_DECREF(t);
-                return NULL;
-            }
-            // Use impl and then decref the borrowed refs
-            PyObject *res = TransientMap_assoc_mut_impl(t, key, val);
-            Py_DECREF(key);
-            Py_DECREF(val);
-            Py_DECREF(item);
-            if (!res) {
-                Py_DECREF(items_iter);
-                Py_DECREF(t);
-                return NULL;
-            }
-            Py_DECREF(res);
-            continue;
-        } else {
-            PyErr_SetString(PyExc_ValueError, "Map merge requires (key, value) pairs");
+        PyObject *key;
+        PyObject *val;
+        if (Map_unpack_pair(item, &key, &val) < 0) {
             Py_DECREF(item);
             Py_DECREF(items_iter);
             Py_DECREF(t);
             return NULL;
         }
 
-        // OPTIMIZATION: Call internal C function directly
+        // OPTIMIZATION: Call internal C function directly.
         PyObject *res = TransientMap_assoc_mut_impl(t, key, val);
+        Py_DECREF(key);
+        Py_DECREF(val);
         Py_DECREF(item);
         if (!res) {
             Py_DECREF(items_iter);

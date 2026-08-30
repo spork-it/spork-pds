@@ -12,6 +12,41 @@
 #endif
 
 /*
+ * Patch 4 direct-access audit (grep: PyList_*, PyTuple_*, PyDict_Next,
+ * PyDict_GET_SIZE, and mutable struct fields):
+ *
+ *   Accessed storage                  Classification / invariant
+ *   --------------------------------  ---------------------------------------
+ *   Vector tails and iterator pairs  immutable tuples
+ *   Function call positional args    immutable tuples
+ *   HAMT node lists                   immutable when persistent; editable
+ *                                     only for the exact transient token
+ *   TransientVector tail lists        owner-confined transient storage
+ *   Builder/result lists and tuples   fresh locals, not externally published
+ *   Function keyword dictionaries     private call-frame dictionaries
+ *   Externally supplied Map pairs     PySequence_GetItem strong references
+ *
+ * There are no PyDict_Next sites.  Persistent node/value fields are immutable
+ * after publication except synchronized caches; transient fields are accessed
+ * only after owner validation; iterator cursor fields are synchronized.
+ * Consequently direct macros remain only on immutable, private, or owner-
+ * confined storage.  Keep this table in sync with new direct accessor sites.
+ *
+ * HAMT copy-on-write proof: every mutation of an existing node list follows
+ * ensure_editable(); fresh unpublished lists are initialized directly.
+ * Editability requires a non-NULL token identical to the node token. Persistent
+ * operations pass NULL; each transient receives a fresh sentinel. Therefore a
+ * published persistent list and two transients from one source can never be
+ * writable aliases.
+ *
+ * Allocation-domain audit:
+ *   - Python objects use type allocators or PyObject_New and matching tp_free.
+ *   - Typed-vector raw tails/caches use malloc/realloc/free consistently.
+ *   - SortedVectorIterator stacks use PyMem_Malloc/Realloc/Free consistently.
+ *   - The extension has no direct PyObject_Malloc allocation.
+ */
+
+/*
  * Object critical sections were added in CPython 3.13.  They lock the
  * object's per-object mutex in free-threaded builds and are no-ops when the
  * GIL is enabled.  Older supported CPython versions are always GIL-enabled,
