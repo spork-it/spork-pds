@@ -658,6 +658,7 @@ typedef struct TransientDoubleVector {
     Py_ssize_t tail_len;
     Py_ssize_t tail_cap;
     PyObject *id;
+    uint64_t owner_thread_id;
 } TransientDoubleVector;
 
 PyTypeObject TransientDoubleVectorType;
@@ -670,6 +671,9 @@ static void TransientDoubleVector_dealloc(TransientDoubleVector *self) {
 }
 
 static void TransientDoubleVector_ensure_editable(TransientDoubleVector *self) {
+    if (pds_check_transient_owner(self->owner_thread_id) < 0) {
+        return;
+    }
     if (self->id == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Transient used after persistent() call");
     }
@@ -737,7 +741,10 @@ static DoubleVectorNode *TransientDoubleVector_push_tail(TransientDoubleVector *
     return ret;
 }
 
-// Internal function that takes a raw double value directly (no boxing overhead)
+/*
+ * Factory-only raw append.  The caller owns an unpublished, owner-initialized
+ * transient, so the Python-visible owner/editability check is not repeated.
+ */
 static int TransientDoubleVector_conj_mut_raw(TransientDoubleVector *self, double dval) {
     // Room in tail?
     if (self->cnt - TransientDoubleVector_tail_off(self) < WIDTH) {
@@ -926,6 +933,7 @@ static PyObject *DoubleVector_transient(DoubleVector *self, PyObject *Py_UNUSED(
             &TransientDoubleVectorType, 0);
     if (!t) return NULL;
 
+    t->owner_thread_id = pds_current_thread_state_id();
     t->id = PyObject_New(PyObject, &PdsSentinelType);
     if (!t->id) {
         Py_DECREF(t);

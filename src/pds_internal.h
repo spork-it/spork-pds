@@ -25,6 +25,36 @@
 #define PDS_END_CRITICAL_SECTION() }
 #endif
 
+#define PDS_TRANSIENT_WRONG_THREAD_ERROR \
+    "Transient objects are confined to their creating thread"
+
+/*
+ * Transients are single-owner builders.  PyThreadState IDs are stable for a
+ * thread state's lifetime and are available throughout our CPython 3.10+
+ * support window.  Keep the metadata on every build, but preserve historical
+ * regular-GIL behavior by enforcing it only in free-threaded builds.
+ */
+static inline uint64_t
+pds_current_thread_state_id(void)
+{
+    return PyThreadState_GetID(PyThreadState_Get());
+}
+
+static inline int
+pds_check_transient_owner(uint64_t owner_thread_id)
+{
+#ifdef Py_GIL_DISABLED
+    if (owner_thread_id != pds_current_thread_state_id()) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        PDS_TRANSIENT_WRONG_THREAD_ERROR);
+        return -1;
+    }
+#else
+    (void)owner_thread_id;
+#endif
+    return 0;
+}
+
 /* A free-threaded CPython object becomes immortal above UINT32_MAX. */
 #if PY_VERSION_HEX >= 0x030D0000 && defined(Py_GIL_DISABLED)
 #define PDS_SINGLETONS_ARE_IMMORTAL 1

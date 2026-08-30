@@ -1124,6 +1124,7 @@ typedef struct TransientSortedVector {
     PyObject *key_fn;
     int reverse;
     PyObject *id;  // Edit token
+    uint64_t owner_thread_id;
 } TransientSortedVector;
 
 PyTypeObject TransientSortedVectorType;
@@ -1150,6 +1151,9 @@ static void TransientSortedVector_dealloc(TransientSortedVector *self) {
 }
 
 static void TransientSortedVector_ensure_editable(TransientSortedVector *self) {
+    if (pds_check_transient_owner(self->owner_thread_id) < 0) {
+        return;
+    }
     if (!self->id) {
         PyErr_SetString(PyExc_RuntimeError, "TransientSortedVector already made persistent");
     }
@@ -1161,6 +1165,7 @@ static PyObject *SortedVector_transient(SortedVector *self, PyObject *Py_UNUSED(
             &TransientSortedVectorType, 0);
     if (!t) return NULL;
 
+    t->owner_thread_id = pds_current_thread_state_id();
     t->id = PyObject_New(PyObject, &PdsSentinelType);
     if (!t->id) {
         Py_DECREF(t);

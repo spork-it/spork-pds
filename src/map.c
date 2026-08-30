@@ -944,6 +944,7 @@ typedef struct TransientMap {
     Py_ssize_t cnt;
     PyObject *root;
     PyObject *id;
+    uint64_t owner_thread_id;
 } TransientMap;
 
 static int TransientMap_traverse(
@@ -970,6 +971,7 @@ static PyObject *Map_transient(Map *self, PyObject *Py_UNUSED(ignored)) {
         &TransientMapType, 0);
     if (!t) return NULL;
 
+    t->owner_thread_id = pds_current_thread_state_id();
     t->id = PyObject_New(PyObject, &PdsSentinelType);
     if (!t->id) {
         Py_DECREF(t);
@@ -997,6 +999,9 @@ static PyObject *Map_transient(Map *self, PyObject *Py_UNUSED(ignored)) {
 }
 
 static void TransientMap_ensure_editable(TransientMap *self) {
+    if (pds_check_transient_owner(self->owner_thread_id) < 0) {
+        return;
+    }
     if (self->id == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Transient used after persistent() call");
     }

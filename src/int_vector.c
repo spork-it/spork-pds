@@ -641,6 +641,7 @@ typedef struct TransientIntVector {
     Py_ssize_t tail_len;
     Py_ssize_t tail_cap;
     PyObject *id;
+    uint64_t owner_thread_id;
 } TransientIntVector;
 
 PyTypeObject TransientIntVectorType;
@@ -653,6 +654,9 @@ static void TransientIntVector_dealloc(TransientIntVector *self) {
 }
 
 static void TransientIntVector_ensure_editable(TransientIntVector *self) {
+    if (pds_check_transient_owner(self->owner_thread_id) < 0) {
+        return;
+    }
     if (self->id == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Transient used after persistent() call");
     }
@@ -720,7 +724,10 @@ static IntVectorNode *TransientIntVector_push_tail(TransientIntVector *self, int
     return ret;
 }
 
-// Internal function that takes a raw int64_t value directly (no boxing overhead)
+/*
+ * Factory-only raw append.  The caller owns an unpublished, owner-initialized
+ * transient, so the Python-visible owner/editability check is not repeated.
+ */
 static int TransientIntVector_conj_mut_raw(TransientIntVector *self, int64_t lval) {
     // Room in tail?
     if (self->cnt - TransientIntVector_tail_off(self) < WIDTH) {
@@ -909,6 +916,7 @@ static PyObject *IntVector_transient(IntVector *self, PyObject *Py_UNUSED(ignore
             &TransientIntVectorType, 0);
     if (!t) return NULL;
 
+    t->owner_thread_id = pds_current_thread_state_id();
     t->id = PyObject_New(PyObject, &PdsSentinelType);
     if (!t->id) {
         Py_DECREF(t);

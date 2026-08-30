@@ -1148,6 +1148,7 @@ struct TransientSet {
     Py_ssize_t cnt;
     PyObject *root;
     PyObject *id;
+    uint64_t owner_thread_id;
 };
 
 static int TransientSet_traverse(
@@ -1174,6 +1175,7 @@ static PyObject *Set_transient(Set *self, PyObject *Py_UNUSED(ignored)) {
         &TransientSetType, 0);
     if (!t) return NULL;
 
+    t->owner_thread_id = pds_current_thread_state_id();
     t->id = PyObject_New(PyObject, &PdsSentinelType);
     if (!t->id) {
         Py_DECREF(t);
@@ -1201,6 +1203,9 @@ static PyObject *Set_transient(Set *self, PyObject *Py_UNUSED(ignored)) {
 }
 
 static void TransientSet_ensure_editable(TransientSet *self) {
+    if (pds_check_transient_owner(self->owner_thread_id) < 0) {
+        return;
+    }
     if (self->id == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Transient used after persistent() call");
     }
@@ -1474,23 +1479,12 @@ PyObject *pds_set(PyObject *self, PyObject *args) {
     PyObject *iter = PyObject_GetIter(iterable);
     if (!iter) return NULL;
 
-    // Use transient for efficient building
-    TransientSet *t = (TransientSet *)TransientSetType.tp_alloc(
-        &TransientSetType, 0);
+    // Use an owner-initialized transient for efficient building.
+    TransientSet *t = (TransientSet *)Set_transient(EMPTY_SET, NULL);
     if (!t) {
         Py_DECREF(iter);
         return NULL;
     }
-
-    t->id = PyObject_New(PyObject, &PdsSentinelType);
-    if (!t->id) {
-        Py_DECREF(t);
-        Py_DECREF(iter);
-        return NULL;
-    }
-
-    t->cnt = 0;
-    t->root = NULL;
 
     PyObject *key;
     while ((key = PyIter_Next(iter)) != NULL) {

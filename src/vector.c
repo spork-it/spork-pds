@@ -1215,6 +1215,7 @@ typedef struct TransientVector {
     VectorNode *root;
     PyObject *tail;  // list
     PyObject *id;
+    uint64_t owner_thread_id;
 } TransientVector;
 
 static int TransientVector_traverse(TransientVector *self, visitproc visit, void *arg) {
@@ -1242,6 +1243,7 @@ static PyObject *Vector_transient(Vector *self, PyObject *Py_UNUSED(ignored)) {
         &TransientVectorType, 0);
     if (!t) return NULL;
 
+    t->owner_thread_id = pds_current_thread_state_id();
     t->id = PyObject_New(PyObject, &PdsSentinelType);
     if (!t->id) {
         Py_DECREF(t);
@@ -1278,6 +1280,9 @@ static Py_ssize_t TransientVector_tail_off(TransientVector *self) {
 }
 
 static void TransientVector_ensure_editable(TransientVector *self) {
+    if (pds_check_transient_owner(self->owner_thread_id) < 0) {
+        return;
+    }
     if (self->id == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Transient used after persistent() call");
     }
@@ -1783,10 +1788,8 @@ static PyObject *TransientVectorIterator_next(TransientVectorIterator *self) {
     if (self->tvec == NULL) {
         return NULL;
     }
-    if (self->tvec->id == NULL) {
-        PyErr_SetString(PyExc_RuntimeError, "Transient used after persistent() call");
-        return NULL;
-    }
+    TransientVector_ensure_editable(self->tvec);
+    if (PyErr_Occurred()) return NULL;
 
     if (self->index >= self->tvec->cnt) {
         return NULL;  // StopIteration
