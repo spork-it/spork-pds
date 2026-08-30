@@ -238,6 +238,9 @@ def _clean_subprocess_env(*, force_no_gil=False):
     env = os.environ.copy()
     env.pop("PYTHON_GIL", None)
     env.pop("PYTHONWARNINGS", None)
+    sanitizer_runtime = env.get("SPORK_PDS_DYLD_INSERT_LIBRARIES")
+    if sanitizer_runtime:
+        env["DYLD_INSERT_LIBRARIES"] = sanitizer_runtime
     if force_no_gil and sysconfig.get_config_var("Py_GIL_DISABLED"):
         env["PYTHON_GIL"] = "0"
     return env
@@ -371,7 +374,13 @@ def test_module_rejects_or_survives_legacy_subinterpreter_teardown():
         """
     )
 
-    subprocess.run([sys.executable, "-c", script], check=True)
+    subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        env=_clean_subprocess_env(
+            force_no_gil=bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+        ),
+    )
 
 
 def test_transient_types_cannot_be_constructed_directly():

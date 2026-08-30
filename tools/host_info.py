@@ -7,6 +7,7 @@ import os
 import platform
 import subprocess
 import sys
+import sysconfig
 
 
 def get_cpu_info():
@@ -65,6 +66,13 @@ def main():
     print(f"- **Cores**: {os.cpu_count()}")
     print(f"- **Memory**: {get_memory_gb()} GB")
     print(f"- **Python**: {get_python_impl()}")
+    print(
+        "- **Free-threaded build**: "
+        f"{bool(sysconfig.get_config_var('Py_GIL_DISABLED'))}"
+    )
+    if hasattr(sys, "_is_gil_enabled"):
+        print(f"- **GIL enabled**: {sys._is_gil_enabled()}")
+    print(f"- **Compiler**: {platform.python_compiler()}")
     print(f"- **Architecture**: {platform.machine()}")
 
 

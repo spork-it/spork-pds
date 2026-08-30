@@ -15,6 +15,7 @@ This document describes methodology rather than publishing a permanent winner ta
 - [Running the suite](#running-the-suite)
 - [Reading results](#reading-results)
 - [Generating a report](#generating-a-report)
+- [Free-threading benchmarks](#free-threading-benchmarks)
 - [Adding benchmarks](#adding-benchmarks)
 
 ## What it measures
@@ -142,6 +143,46 @@ make benchmark-report REPORT_ARGS="--iter 50 --seed 0 --output benchmark-results
 Generated reports are snapshots for one machine and environment. The report includes host information, package version, sizes, iteration count, seed, and raw output. Keep all of that context with any published result, along with compiler flags or environment details that the host report does not capture.
 
 For comparisons across commits, use the same machine and power mode, rebuild the extension for each commit, close unrelated workloads, and run the report more than once. Avoid comparing generated reports from different Python build modes as though only the `spork-pds` code changed.
+
+## Free-threading benchmarks
+
+`tools/benchmark_free_threading.py` focuses on paths affected by the native free-threading design:
+
+- cached and uncached persistent hashes;
+- vector indexing and iteration;
+- map lookup;
+- persistent vector `conj`/`assoc` and map `assoc`;
+- single-thread vector/map transient construction;
+- serial and parallel independent transient construction;
+- first and repeated typed-buffer export.
+
+Run it separately with regular and free-threaded interpreters:
+
+```bash
+python tools/benchmark_free_threading.py \
+  --size 4096 --repeats 9 --workers 8 \
+  --json results.json
+```
+
+The equivalent Make target is:
+
+```bash
+make benchmark-free-threading \
+  FT_BENCH_ARGS="--size 4096 --repeats 9 --workers 8 --json results.json"
+```
+
+A JSON report may be compared only with a report using the same build mode and configuration:
+
+```bash
+python tools/benchmark_free_threading.py \
+  --size 4096 --repeats 9 --workers 8 \
+  --baseline baseline.json \
+  --json current.json
+```
+
+`--max-regression 1.10` can make a controlled comparison fail above a 10% median regression. Do not use a tight threshold on shared CI hosts, and do not compare regular and free-threaded results as if their interpreter builds were otherwise identical.
+
+The native free-threading validation methodology and recorded release measurements are in [Native Free-Threading Support](FREE_THREADING.md).
 
 ## Adding benchmarks
 

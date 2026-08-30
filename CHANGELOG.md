@@ -11,6 +11,8 @@ All notable changes to `spork-pds` will be documented here.
 - Synchronize lazy hash/buffer publication and iterator cursor advancement.
 - Confine each transient to its creating thread on free-threaded builds while allowing independent builders to run in parallel.
 - Hold strong references while unpacking externally supplied mutable map pairs.
+- Add sanitizer-backed no-GIL stress and synchronization-sensitive performance validation.
+- Build, install, and smoke-test ABI-separated CPython 3.14t wheels before release publication.
 
 ## 0.1.3
 

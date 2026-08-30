@@ -145,6 +145,8 @@ Persistent collections are immutable after publication and may be shared between
 
 Different transient builders may execute in parallel. Each transient is confined to its creating Python thread on free-threaded builds, and cross-thread access is rejected before mutable state is touched. Objects stored inside a collection retain their own synchronization requirements; collection-level safety does not make an arbitrary nested Python object thread-safe.
 
+See [Native Free-Threading Support](FREE_THREADING.md) for the stress, sanitizer, performance, and distribution validation used for release claims.
+
 ## Subinterpreters
 
 The extension declares isolated and per-interpreter-GIL subinterpreters unsupported because its static types and empty singleton aliases are process-wide. Legacy shared-GIL subinterpreter import and teardown are regression-tested for CPython configurations that explicitly bypass that compatibility check.

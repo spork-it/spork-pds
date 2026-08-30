@@ -101,7 +101,7 @@ Calling `persistent()` invalidates the transient. Further edits and element acce
 
 On free-threaded CPython 3.14t, importing `spork-pds` leaves the GIL disabled. Persistent values are immutable and may be shared between threads, and different transient builders may run in parallel.
 
-A transient is confined to the Python thread that created it. Cross-thread access to the same transient raises `RuntimeError`; convert it to a persistent value before sharing it. Stored Python objects remain responsible for their own thread safety, just as they are when stored in a tuple or dictionary. Isolated and per-interpreter-GIL subinterpreters remain unsupported.
+A transient is confined to the Python thread that created it. Cross-thread access to the same transient raises `RuntimeError`; convert it to a persistent value before sharing it. Stored Python objects remain responsible for their own thread safety, just as they are when stored in a tuple or dictionary. Isolated and per-interpreter-GIL subinterpreters remain unsupported. See [Native Free-Threading Support](docs/FREE_THREADING.md) for stress, sanitizer, performance, and wheel validation details.
 
 ### Typed vectors and NumPy
 
@@ -127,6 +127,7 @@ The first buffer request materializes and caches contiguous storage; subsequent 
 - [Practical guide](docs/GUIDE.md)
 - [API reference](docs/API.md)
 - [Design and complexity](docs/DESIGN.md)
+- [Native free-threading support](docs/FREE_THREADING.md)
 - [Benchmark suite](docs/BENCHMARKS.md)
 - [Documentation index](docs/README.md)
 - [Changelog](CHANGELOG.md)
@@ -149,7 +150,9 @@ Useful targets:
 ```bash
 make build
 make build-debug
+make stress-free-threading STRESS_ARGS="--require-no-gil"
 make benchmark BENCH_ARGS="--size 100000 --iter 50"
+make benchmark-free-threading FT_BENCH_ARGS="--size 4096 --repeats 9"
 make dist
 make check-dist
 ```

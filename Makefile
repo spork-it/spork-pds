@@ -1,5 +1,6 @@
-.PHONY: help venv build build-debug install-dev clean test verify-docs fuzz fuzz-long benchmark benchmark-report verify \
-        dist sdist wheel upload-test upload check-dist \
+.PHONY: help venv build build-debug install-dev clean test verify-docs fuzz fuzz-long stress-free-threading \
+        benchmark benchmark-free-threading benchmark-report verify \
+        dist sdist wheel smoke-wheel upload-test upload check-dist \
         clean-build clean-pyc clean-venv clean-all
 
 VENV := .venv
@@ -24,7 +25,9 @@ help:
 	@echo "  verify-docs      - Execute documentation examples"
 	@echo "  fuzz             - Run 1,000 vector fuzz examples"
 	@echo "  fuzz-long        - Run 50,000 vector fuzz examples"
+	@echo "  stress-free-threading - Run synchronization stress tests (STRESS_ARGS='...')"
 	@echo "  benchmark        - Run the benchmark suite (BENCH_ARGS='...')"
+	@echo "  benchmark-free-threading - Benchmark synchronized/threaded paths (FT_BENCH_ARGS='...')"
 	@echo "  benchmark-report - Generate a Markdown benchmark report (REPORT_ARGS='...')"
 	@echo "  verify           - Run tests and validate distributions"
 	@echo ""
@@ -32,7 +35,8 @@ help:
 	@echo "  dist             - Build source and wheel distributions"
 	@echo "  sdist            - Build the source distribution"
 	@echo "  wheel            - Build a wheel"
-	@echo "  check-dist       - Validate distributions with twine"
+	@echo "  check-dist       - Validate distribution metadata, contents, and wheel tags"
+	@echo "  smoke-wheel      - Install and smoke-test the locally built wheel"
 	@echo "  upload-test      - Upload distributions to TestPyPI"
 	@echo "  upload           - Upload distributions to PyPI"
 	@echo ""
@@ -57,8 +61,8 @@ venv: $(VENV_READY)
 
 build: $(VENV_READY)
 	@set -e; \
-	extension=$$(find . -maxdepth 1 -type f \( -name 'spork_pds*.so' -o -name 'spork_pds*.pyd' \) -print -quit); \
-	if [ -z "$$extension" ] || find $(PDS_SOURCES) -newer "$$extension" -print -quit | grep -q .; then \
+	extension="spork_pds$$($(PYTHON) -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')"; \
+	if [ ! -f "$$extension" ] || find $(PDS_SOURCES) -newer "$$extension" -print -quit | grep -q .; then \
 		echo "Building C extension..."; \
 		$(PYTHON) setup.py build_ext --inplace; \
 		echo "✓ C extension built"; \
@@ -109,13 +113,19 @@ fuzz: build
 fuzz-long: build
 	$(PYTHON) -m tests.fuzzing --examples 50000 --steps 200
 
+stress-free-threading: build
+	$(PYTHON) tools/stress_free_threading.py $(STRESS_ARGS)
+
 benchmark: build
 	$(PYTHON) tools/benchmark_pds.py $(BENCH_ARGS)
+
+benchmark-free-threading: build
+	$(PYTHON) tools/benchmark_free_threading.py $(FT_BENCH_ARGS)
 
 benchmark-report: build
 	$(PYTHON) tools/generate_benchmark_report.py $(REPORT_ARGS)
 
-verify: test verify-docs check-dist
+verify: test verify-docs smoke-wheel
 
 # ============================================================================
 # Packaging
@@ -135,6 +145,13 @@ wheel: $(VENV_READY) clean-build
 
 check-dist: dist
 	$(TWINE) check dist/*
+	$(PYTHON) tools/verify_distributions.py dist --require-regular --require-sdist
+
+smoke-wheel: check-dist
+	rm -rf build/wheel-smoke
+	$(PYTHON) -m venv build/wheel-smoke
+	build/wheel-smoke/bin/python -m pip install --force-reinstall dist/*.whl
+	cd /tmp && $(abspath build/wheel-smoke/bin/python) $(abspath tools/smoke_installed_distribution.py)
 
 upload-test: check-dist
 	$(TWINE) upload --repository testpypi dist/*
