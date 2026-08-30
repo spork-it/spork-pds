@@ -49,15 +49,6 @@ jobs:
           architecture: ${{ (endsWith(matrix.os, '-arm') || matrix.os == 'macos-15') && 'arm64' || 'x64' }}
           allow-prereleases: true
 
-      - name: Set PYTHON_GIL=0 for free-threaded builds (Unix)
-        if: endsWith(matrix.python-version, 't') && runner.os != 'Windows'
-        run: echo "PYTHON_GIL=0" >> "$GITHUB_ENV"
-
-      - name: Set PYTHON_GIL=0 for free-threaded builds (Windows)
-        if: endsWith(matrix.python-version, 't') && runner.os == 'Windows'
-        shell: pwsh
-        run: echo "PYTHON_GIL=0" >> $env:GITHUB_ENV
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -97,10 +88,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
-
-      - name: Set PYTHON_GIL=0 for free-threaded Python
-        if: endsWith(matrix.python-version, 't')
-        run: echo "PYTHON_GIL=0" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: |
