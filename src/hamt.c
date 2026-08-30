@@ -605,6 +605,26 @@ PyObject *BitmapIndexedNode_dissoc(BitmapIndexedNode *self, int shift, Py_hash_t
 #define ITER_MODE_KEYS 1
 #define ITER_MODE_VALUES 2
 
+static PyObject *hamt_node_iter_mode_guarded(
+    PyObject *node, int mode, int owner_guard, uint64_t owner_thread_id) {
+    if (PyObject_TypeCheck(node, &BitmapIndexedNodeType)) {
+        return owner_guard
+            ? BitmapIndexedNode_iter_mode_transient(
+                  (BitmapIndexedNode *)node, mode, owner_thread_id)
+            : BitmapIndexedNode_iter_mode((BitmapIndexedNode *)node, mode);
+    }
+    if (PyObject_TypeCheck(node, &ArrayNodeType)) {
+        return owner_guard
+            ? ArrayNode_iter_mode_transient(
+                  (ArrayNode *)node, mode, owner_thread_id)
+            : ArrayNode_iter_mode((ArrayNode *)node, mode);
+    }
+    return owner_guard
+        ? HashCollisionNode_iter_mode_transient(
+              (HashCollisionNode *)node, mode, owner_thread_id)
+        : HashCollisionNode_iter_mode((HashCollisionNode *)node, mode);
+}
+
 // BitmapIndexedNode iterator
 typedef struct {
     PyObject_HEAD
@@ -612,6 +632,9 @@ typedef struct {
     Py_ssize_t index;
     PyObject *child_iter;
     int mode;  // ITER_MODE_ITEMS, ITER_MODE_KEYS, or ITER_MODE_VALUES
+    int busy;
+    int owner_guard;
+    uint64_t owner_thread_id;
 } BitmapIndexedNodeIterator;
 
 PyTypeObject BitmapIndexedNodeIteratorType;
@@ -635,7 +658,8 @@ static void BitmapIndexedNodeIterator_dealloc(BitmapIndexedNodeIterator *self) {
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static PyObject *BitmapIndexedNodeIterator_next(BitmapIndexedNodeIterator *self) {
+static PyObject *BitmapIndexedNodeIterator_next_impl(
+    BitmapIndexedNodeIterator *self) {
     if (self->node == NULL || self->node->array == NULL) return NULL;
 
     // If we have a child iterator, try to get next from it
@@ -670,14 +694,10 @@ static PyObject *BitmapIndexedNodeIterator_next(BitmapIndexedNodeIterator *self)
             }
             return result;
         } else if (val_or_node != Py_None) {
-            // Child node - get its iterator with same mode
-            if (PyObject_TypeCheck(val_or_node, &BitmapIndexedNodeType)) {
-                self->child_iter = BitmapIndexedNode_iter_mode((BitmapIndexedNode *)val_or_node, self->mode);
-            } else if (PyObject_TypeCheck(val_or_node, &ArrayNodeType)) {
-                self->child_iter = ArrayNode_iter_mode((ArrayNode *)val_or_node, self->mode);
-            } else {
-                self->child_iter = HashCollisionNode_iter_mode((HashCollisionNode *)val_or_node, self->mode);
-            }
+            // Child iterators inherit transient ownership, when present.
+            self->child_iter = hamt_node_iter_mode_guarded(
+                val_or_node, self->mode, self->owner_guard,
+                self->owner_thread_id);
             if (!self->child_iter) return NULL;
 
             PyObject *result = PyIter_Next(self->child_iter);
@@ -688,6 +708,28 @@ static PyObject *BitmapIndexedNodeIterator_next(BitmapIndexedNodeIterator *self)
     }
 
     return NULL;  // StopIteration
+}
+
+static PyObject *BitmapIndexedNodeIterator_next(
+    BitmapIndexedNodeIterator *self) {
+    PyObject *result = NULL;
+
+    if (self->owner_guard &&
+        pds_check_transient_owner(self->owner_thread_id) < 0) {
+        return NULL;
+    }
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->busy) {
+        PyErr_SetString(PyExc_RuntimeError, PDS_ITERATOR_BUSY_ERROR);
+    } else {
+        self->busy = 1;
+        result = BitmapIndexedNodeIterator_next_impl(self);
+        self->busy = 0;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    return result;
 }
 
 PyTypeObject BitmapIndexedNodeIteratorType = {
@@ -704,7 +746,9 @@ PyTypeObject BitmapIndexedNodeIteratorType = {
     .tp_iternext = (iternextfunc)BitmapIndexedNodeIterator_next,
 };
 
-PyObject *BitmapIndexedNode_iter_mode(BitmapIndexedNode *self, int mode) {
+static PyObject *BitmapIndexedNode_iter_mode_impl(
+    BitmapIndexedNode *self, int mode, int owner_guard,
+    uint64_t owner_thread_id) {
     BitmapIndexedNodeIterator *it =
         (BitmapIndexedNodeIterator *)BitmapIndexedNodeIteratorType.tp_alloc(
             &BitmapIndexedNodeIteratorType, 0);
@@ -715,7 +759,20 @@ PyObject *BitmapIndexedNode_iter_mode(BitmapIndexedNode *self, int mode) {
     it->index = 0;
     it->child_iter = NULL;
     it->mode = mode;
+    it->busy = 0;
+    it->owner_guard = owner_guard;
+    it->owner_thread_id = owner_thread_id;
     return (PyObject *)it;
+}
+
+PyObject *BitmapIndexedNode_iter_mode(BitmapIndexedNode *self, int mode) {
+    return BitmapIndexedNode_iter_mode_impl(self, mode, 0, 0);
+}
+
+PyObject *BitmapIndexedNode_iter_mode_transient(
+    BitmapIndexedNode *self, int mode, uint64_t owner_thread_id) {
+    return BitmapIndexedNode_iter_mode_impl(
+        self, mode, 1, owner_thread_id);
 }
 
 PyObject *BitmapIndexedNode_iter_kv(BitmapIndexedNode *self) {
@@ -879,6 +936,9 @@ typedef struct {
     int index;
     PyObject *child_iter;
     int mode;  // ITER_MODE_ITEMS, ITER_MODE_KEYS, or ITER_MODE_VALUES
+    int busy;
+    int owner_guard;
+    uint64_t owner_thread_id;
 } ArrayNodeIterator;
 
 PyTypeObject ArrayNodeIteratorType;
@@ -902,7 +962,7 @@ static void ArrayNodeIterator_dealloc(ArrayNodeIterator *self) {
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static PyObject *ArrayNodeIterator_next(ArrayNodeIterator *self) {
+static PyObject *ArrayNodeIterator_next_impl(ArrayNodeIterator *self) {
     if (self->node == NULL || self->node->array == NULL) return NULL;
 
     while (self->child_iter) {
@@ -917,13 +977,9 @@ static PyObject *ArrayNodeIterator_next(ArrayNodeIterator *self) {
         self->index++;
 
         if (node != Py_None) {
-            if (PyObject_TypeCheck(node, &BitmapIndexedNodeType)) {
-                self->child_iter = BitmapIndexedNode_iter_mode((BitmapIndexedNode *)node, self->mode);
-            } else if (PyObject_TypeCheck(node, &ArrayNodeType)) {
-                self->child_iter = ArrayNode_iter_mode((ArrayNode *)node, self->mode);
-            } else {
-                self->child_iter = HashCollisionNode_iter_mode((HashCollisionNode *)node, self->mode);
-            }
+            self->child_iter = hamt_node_iter_mode_guarded(
+                node, self->mode, self->owner_guard,
+                self->owner_thread_id);
             if (!self->child_iter) return NULL;
 
             PyObject *result = PyIter_Next(self->child_iter);
@@ -934,6 +990,27 @@ static PyObject *ArrayNodeIterator_next(ArrayNodeIterator *self) {
     }
 
     return NULL;
+}
+
+static PyObject *ArrayNodeIterator_next(ArrayNodeIterator *self) {
+    PyObject *result = NULL;
+
+    if (self->owner_guard &&
+        pds_check_transient_owner(self->owner_thread_id) < 0) {
+        return NULL;
+    }
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->busy) {
+        PyErr_SetString(PyExc_RuntimeError, PDS_ITERATOR_BUSY_ERROR);
+    } else {
+        self->busy = 1;
+        result = ArrayNodeIterator_next_impl(self);
+        self->busy = 0;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    return result;
 }
 
 PyTypeObject ArrayNodeIteratorType = {
@@ -950,7 +1027,8 @@ PyTypeObject ArrayNodeIteratorType = {
     .tp_iternext = (iternextfunc)ArrayNodeIterator_next,
 };
 
-PyObject *ArrayNode_iter_mode(ArrayNode *self, int mode) {
+static PyObject *ArrayNode_iter_mode_impl(
+    ArrayNode *self, int mode, int owner_guard, uint64_t owner_thread_id) {
     ArrayNodeIterator *it = (ArrayNodeIterator *)ArrayNodeIteratorType.tp_alloc(
         &ArrayNodeIteratorType, 0);
     if (!it) return NULL;
@@ -960,7 +1038,19 @@ PyObject *ArrayNode_iter_mode(ArrayNode *self, int mode) {
     it->index = 0;
     it->child_iter = NULL;
     it->mode = mode;
+    it->busy = 0;
+    it->owner_guard = owner_guard;
+    it->owner_thread_id = owner_thread_id;
     return (PyObject *)it;
+}
+
+PyObject *ArrayNode_iter_mode(ArrayNode *self, int mode) {
+    return ArrayNode_iter_mode_impl(self, mode, 0, 0);
+}
+
+PyObject *ArrayNode_iter_mode_transient(
+    ArrayNode *self, int mode, uint64_t owner_thread_id) {
+    return ArrayNode_iter_mode_impl(self, mode, 1, owner_thread_id);
 }
 
 PyObject *ArrayNode_iter_kv(ArrayNode *self) {
@@ -1081,6 +1171,9 @@ typedef struct {
     HashCollisionNode *node;
     Py_ssize_t index;
     int mode;  // ITER_MODE_ITEMS, ITER_MODE_KEYS, or ITER_MODE_VALUES
+    int busy;
+    int owner_guard;
+    uint64_t owner_thread_id;
 } HashCollisionNodeIterator;
 
 PyTypeObject HashCollisionNodeIteratorType;
@@ -1102,7 +1195,8 @@ static void HashCollisionNodeIterator_dealloc(HashCollisionNodeIterator *self) {
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static PyObject *HashCollisionNodeIterator_next(HashCollisionNodeIterator *self) {
+static PyObject *HashCollisionNodeIterator_next_impl(
+    HashCollisionNodeIterator *self) {
     if (self->node == NULL || self->node->array == NULL ||
         self->index >= PyList_Size(self->node->array)) {
         return NULL;
@@ -1129,6 +1223,28 @@ static PyObject *HashCollisionNodeIterator_next(HashCollisionNodeIterator *self)
     return result;
 }
 
+static PyObject *HashCollisionNodeIterator_next(
+    HashCollisionNodeIterator *self) {
+    PyObject *result = NULL;
+
+    if (self->owner_guard &&
+        pds_check_transient_owner(self->owner_thread_id) < 0) {
+        return NULL;
+    }
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->busy) {
+        PyErr_SetString(PyExc_RuntimeError, PDS_ITERATOR_BUSY_ERROR);
+    } else {
+        self->busy = 1;
+        result = HashCollisionNodeIterator_next_impl(self);
+        self->busy = 0;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    return result;
+}
+
 PyTypeObject HashCollisionNodeIteratorType = {
     PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "spork_pds.HashCollisionNodeIterator",
@@ -1143,7 +1259,9 @@ PyTypeObject HashCollisionNodeIteratorType = {
     .tp_iternext = (iternextfunc)HashCollisionNodeIterator_next,
 };
 
-PyObject *HashCollisionNode_iter_mode(HashCollisionNode *self, int mode) {
+static PyObject *HashCollisionNode_iter_mode_impl(
+    HashCollisionNode *self, int mode, int owner_guard,
+    uint64_t owner_thread_id) {
     HashCollisionNodeIterator *it =
         (HashCollisionNodeIterator *)HashCollisionNodeIteratorType.tp_alloc(
             &HashCollisionNodeIteratorType, 0);
@@ -1153,7 +1271,20 @@ PyObject *HashCollisionNode_iter_mode(HashCollisionNode *self, int mode) {
     Py_INCREF(self);
     it->index = 0;
     it->mode = mode;
+    it->busy = 0;
+    it->owner_guard = owner_guard;
+    it->owner_thread_id = owner_thread_id;
     return (PyObject *)it;
+}
+
+PyObject *HashCollisionNode_iter_mode(HashCollisionNode *self, int mode) {
+    return HashCollisionNode_iter_mode_impl(self, mode, 0, 0);
+}
+
+PyObject *HashCollisionNode_iter_mode_transient(
+    HashCollisionNode *self, int mode, uint64_t owner_thread_id) {
+    return HashCollisionNode_iter_mode_impl(
+        self, mode, 1, owner_thread_id);
 }
 
 PyObject *HashCollisionNode_iter_kv(HashCollisionNode *self) {

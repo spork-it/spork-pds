@@ -228,6 +228,7 @@ static PyObject *Set_disj(Set *self, PyObject *key) {
 struct SetIterator {
     PyObject_HEAD
     PyObject *kv_iter;  // Underlying key-value iterator
+    int busy;
 };
 
 PyTypeObject SetIteratorType;
@@ -248,7 +249,7 @@ static void SetIterator_dealloc(SetIterator *self) {
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static PyObject *SetIterator_next(SetIterator *self) {
+static PyObject *SetIterator_next_impl(SetIterator *self) {
     if (!self->kv_iter) return NULL;
 
     PyObject *pair = PyIter_Next(self->kv_iter);
@@ -258,6 +259,22 @@ static PyObject *SetIterator_next(SetIterator *self) {
     Py_INCREF(key);
     Py_DECREF(pair);
     return key;
+}
+
+static PyObject *SetIterator_next(SetIterator *self) {
+    PyObject *result = NULL;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->busy) {
+        PyErr_SetString(PyExc_RuntimeError, PDS_ITERATOR_BUSY_ERROR);
+    } else {
+        self->busy = 1;
+        result = SetIterator_next_impl(self);
+        self->busy = 0;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    return result;
 }
 
 PyTypeObject SetIteratorType = {
@@ -298,6 +315,7 @@ static PyObject *Set_iter(Set *self) {
     }
 
     it->kv_iter = kv_iter;
+    it->busy = 0;
     return (PyObject *)it;
 }
 
@@ -1370,17 +1388,22 @@ static PyObject *TransientSet_iter(TransientSet *self) {
     if (PyErr_Occurred()) return NULL;
 
     if (self->root == NULL) {
-        // Return empty iterator
-        return pds_empty_iterator();
+        return BitmapIndexedNode_iter_mode_transient(
+            EMPTY_BIN, ITER_MODE_KEYS, self->owner_thread_id);
     }
-
     if (PyObject_TypeCheck(self->root, &BitmapIndexedNodeType)) {
-        return BitmapIndexedNode_iter_mode((BitmapIndexedNode *)self->root, ITER_MODE_KEYS);
-    } else if (PyObject_TypeCheck(self->root, &ArrayNodeType)) {
-        return ArrayNode_iter_mode((ArrayNode *)self->root, ITER_MODE_KEYS);
-    } else {
-        return HashCollisionNode_iter_mode((HashCollisionNode *)self->root, ITER_MODE_KEYS);
+        return BitmapIndexedNode_iter_mode_transient(
+            (BitmapIndexedNode *)self->root, ITER_MODE_KEYS,
+            self->owner_thread_id);
     }
+    if (PyObject_TypeCheck(self->root, &ArrayNodeType)) {
+        return ArrayNode_iter_mode_transient(
+            (ArrayNode *)self->root, ITER_MODE_KEYS,
+            self->owner_thread_id);
+    }
+    return HashCollisionNode_iter_mode_transient(
+        (HashCollisionNode *)self->root, ITER_MODE_KEYS,
+        self->owner_thread_id);
 }
 
 // Python set methods: add, discard, remove, clear

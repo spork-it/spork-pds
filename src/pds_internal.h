@@ -29,6 +29,15 @@
     "Transient objects are confined to their creating thread"
 
 /*
+ * Iterator next wrappers hold the iterator's object critical section and use
+ * this error when a suspended or reentrant call encounters an active cursor.
+ * GC traversal is stop-the-world on free-threaded CPython; clear/deallocation
+ * only operate once the iterator is unreachable, so lifecycle hooks do not
+ * participate in cursor locking.
+ */
+#define PDS_ITERATOR_BUSY_ERROR "Iterator is already executing"
+
+/*
  * Transients are single-owner builders.  PyThreadState IDs are stable for a
  * thread state's lifetime and are available throughout our CPython 3.10+
  * support window.  Keep the metadata on every build, but preserve historical
@@ -251,6 +260,12 @@ PyObject *HashCollisionNode_dissoc(HashCollisionNode *self, int shift,
 PyObject *BitmapIndexedNode_iter_mode(BitmapIndexedNode *self, int mode);
 PyObject *ArrayNode_iter_mode(ArrayNode *self, int mode);
 PyObject *HashCollisionNode_iter_mode(HashCollisionNode *self, int mode);
+PyObject *BitmapIndexedNode_iter_mode_transient(
+    BitmapIndexedNode *self, int mode, uint64_t owner_thread_id);
+PyObject *ArrayNode_iter_mode_transient(
+    ArrayNode *self, int mode, uint64_t owner_thread_id);
+PyObject *HashCollisionNode_iter_mode_transient(
+    HashCollisionNode *self, int mode, uint64_t owner_thread_id);
 PyObject *BitmapIndexedNode_iter_kv(BitmapIndexedNode *self);
 PyObject *ArrayNode_iter_kv(ArrayNode *self);
 PyObject *HashCollisionNode_iter_kv(HashCollisionNode *self);

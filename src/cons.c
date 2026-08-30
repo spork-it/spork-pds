@@ -250,6 +250,7 @@ static PySequenceMethods Cons_as_sequence = {
 typedef struct {
     PyObject_HEAD
     PyObject *curr;
+    int busy;
 } ConsIterator;
 
 PyTypeObject ConsIteratorType;
@@ -270,7 +271,7 @@ static void ConsIterator_dealloc(ConsIterator *self) {
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static PyObject *ConsIterator_next(ConsIterator *self) {
+static PyObject *ConsIterator_next_impl(ConsIterator *self) {
     if (self->curr == NULL || self->curr == Py_None ||
         !PyObject_TypeCheck(self->curr, &ConsType)) {
         return NULL;  // StopIteration
@@ -282,8 +283,25 @@ static PyObject *ConsIterator_next(ConsIterator *self) {
 
     PyObject *next = c->rest;
     Py_INCREF(next);
-    Py_DECREF(self->curr);
+    PyObject *previous = self->curr;
     self->curr = next;
+    Py_DECREF(previous);
+
+    return result;
+}
+
+static PyObject *ConsIterator_next(ConsIterator *self) {
+    PyObject *result = NULL;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->busy) {
+        PyErr_SetString(PyExc_RuntimeError, PDS_ITERATOR_BUSY_ERROR);
+    } else {
+        self->busy = 1;
+        result = ConsIterator_next_impl(self);
+        self->busy = 0;
+    }
+    PDS_END_CRITICAL_SECTION();
 
     return result;
 }
@@ -309,6 +327,7 @@ static PyObject *Cons_iter(Cons *self) {
 
     it->curr = (PyObject *)self;
     Py_INCREF(self);
+    it->busy = 0;
     return (PyObject *)it;
 }
 

@@ -591,6 +591,7 @@ typedef struct {
     PyObject_HEAD
     IntVector *vec;
     Py_ssize_t index;
+    int busy;
 } IntVectorIterator;
 
 PyTypeObject IntVectorIteratorType;
@@ -600,7 +601,7 @@ static void IntVectorIterator_dealloc(IntVectorIterator *self) {
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static PyObject *IntVectorIterator_next(IntVectorIterator *self) {
+static PyObject *IntVectorIterator_next_impl(IntVectorIterator *self) {
     if (self->index >= self->vec->cnt) {
         return NULL;
     }
@@ -609,6 +610,22 @@ static PyObject *IntVectorIterator_next(IntVectorIterator *self) {
     if (PyErr_Occurred()) return NULL;
     self->index++;
     return PyLong_FromLongLong(val);
+}
+
+static PyObject *IntVectorIterator_next(IntVectorIterator *self) {
+    PyObject *result = NULL;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->busy) {
+        PyErr_SetString(PyExc_RuntimeError, PDS_ITERATOR_BUSY_ERROR);
+    } else {
+        self->busy = 1;
+        result = IntVectorIterator_next_impl(self);
+        self->busy = 0;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    return result;
 }
 
 PyTypeObject IntVectorIteratorType = {
@@ -628,6 +645,7 @@ static PyObject *IntVector_iter(IntVector *self) {
     it->vec = self;
     Py_INCREF(self);
     it->index = 0;
+    it->busy = 0;
     return (PyObject *)it;
 }
 

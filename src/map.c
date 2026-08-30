@@ -1240,60 +1240,40 @@ static int TransientMap_contains(TransientMap *self, PyObject *key) {
     return found;
 }
 
-static PyObject *TransientMap_iter(TransientMap *self) {
+static PyObject *TransientMap_iter_mode(TransientMap *self, int mode) {
     TransientMap_ensure_editable(self);
     if (PyErr_Occurred()) return NULL;
 
     if (self->root == NULL) {
-        // Return empty iterator
-        return pds_empty_iterator();
+        return BitmapIndexedNode_iter_mode_transient(
+            EMPTY_BIN, mode, self->owner_thread_id);
     }
-
     if (PyObject_TypeCheck(self->root, &BitmapIndexedNodeType)) {
-        return BitmapIndexedNode_iter_mode((BitmapIndexedNode *)self->root, ITER_MODE_KEYS);
-    } else if (PyObject_TypeCheck(self->root, &ArrayNodeType)) {
-        return ArrayNode_iter_mode((ArrayNode *)self->root, ITER_MODE_KEYS);
-    } else {
-        return HashCollisionNode_iter_mode((HashCollisionNode *)self->root, ITER_MODE_KEYS);
+        return BitmapIndexedNode_iter_mode_transient(
+            (BitmapIndexedNode *)self->root, mode, self->owner_thread_id);
     }
+    if (PyObject_TypeCheck(self->root, &ArrayNodeType)) {
+        return ArrayNode_iter_mode_transient(
+            (ArrayNode *)self->root, mode, self->owner_thread_id);
+    }
+    return HashCollisionNode_iter_mode_transient(
+        (HashCollisionNode *)self->root, mode, self->owner_thread_id);
+}
+
+static PyObject *TransientMap_iter(TransientMap *self) {
+    return TransientMap_iter_mode(self, ITER_MODE_KEYS);
 }
 
 static PyObject *TransientMap_keys(TransientMap *self, PyObject *Py_UNUSED(ignored)) {
-    return TransientMap_iter(self);
+    return TransientMap_iter_mode(self, ITER_MODE_KEYS);
 }
 
 static PyObject *TransientMap_values(TransientMap *self, PyObject *Py_UNUSED(ignored)) {
-    TransientMap_ensure_editable(self);
-    if (PyErr_Occurred()) return NULL;
-
-    if (self->root == NULL) {
-        return pds_empty_iterator();
-    }
-
-    if (PyObject_TypeCheck(self->root, &BitmapIndexedNodeType)) {
-        return BitmapIndexedNode_iter_mode((BitmapIndexedNode *)self->root, ITER_MODE_VALUES);
-    } else if (PyObject_TypeCheck(self->root, &ArrayNodeType)) {
-        return ArrayNode_iter_mode((ArrayNode *)self->root, ITER_MODE_VALUES);
-    } else {
-        return HashCollisionNode_iter_mode((HashCollisionNode *)self->root, ITER_MODE_VALUES);
-    }
+    return TransientMap_iter_mode(self, ITER_MODE_VALUES);
 }
 
 static PyObject *TransientMap_items(TransientMap *self, PyObject *Py_UNUSED(ignored)) {
-    TransientMap_ensure_editable(self);
-    if (PyErr_Occurred()) return NULL;
-
-    if (self->root == NULL) {
-        return pds_empty_iterator();
-    }
-
-    if (PyObject_TypeCheck(self->root, &BitmapIndexedNodeType)) {
-        return BitmapIndexedNode_iter_mode((BitmapIndexedNode *)self->root, ITER_MODE_ITEMS);
-    } else if (PyObject_TypeCheck(self->root, &ArrayNodeType)) {
-        return ArrayNode_iter_mode((ArrayNode *)self->root, ITER_MODE_ITEMS);
-    } else {
-        return HashCollisionNode_iter_mode((HashCollisionNode *)self->root, ITER_MODE_ITEMS);
-    }
+    return TransientMap_iter_mode(self, ITER_MODE_ITEMS);
 }
 
 static PyObject *TransientMap_get(TransientMap *self, PyObject *args) {

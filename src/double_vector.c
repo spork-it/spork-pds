@@ -607,6 +607,7 @@ typedef struct {
     PyObject_HEAD
     DoubleVector *vec;
     Py_ssize_t index;
+    int busy;
 } DoubleVectorIterator;
 
 PyTypeObject DoubleVectorIteratorType;
@@ -616,7 +617,7 @@ static void DoubleVectorIterator_dealloc(DoubleVectorIterator *self) {
     Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
-static PyObject *DoubleVectorIterator_next(DoubleVectorIterator *self) {
+static PyObject *DoubleVectorIterator_next_impl(DoubleVectorIterator *self) {
     if (self->index >= self->vec->cnt) {
         return NULL;  // StopIteration
     }
@@ -625,6 +626,22 @@ static PyObject *DoubleVectorIterator_next(DoubleVectorIterator *self) {
     if (PyErr_Occurred()) return NULL;
     self->index++;
     return PyFloat_FromDouble(val);
+}
+
+static PyObject *DoubleVectorIterator_next(DoubleVectorIterator *self) {
+    PyObject *result = NULL;
+
+    PDS_BEGIN_CRITICAL_SECTION(self);
+    if (self->busy) {
+        PyErr_SetString(PyExc_RuntimeError, PDS_ITERATOR_BUSY_ERROR);
+    } else {
+        self->busy = 1;
+        result = DoubleVectorIterator_next_impl(self);
+        self->busy = 0;
+    }
+    PDS_END_CRITICAL_SECTION();
+
+    return result;
 }
 
 PyTypeObject DoubleVectorIteratorType = {
@@ -645,6 +662,7 @@ static PyObject *DoubleVector_iter(DoubleVector *self) {
     it->vec = self;
     Py_INCREF(self);
     it->index = 0;
+    it->busy = 0;
     return (PyObject *)it;
 }
 
