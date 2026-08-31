@@ -50,7 +50,6 @@ def test_distribution_verifier_checks_release_tools_in_sdist(tmp_path):
         "src/module.c",
         "src/pds_internal.h",
         "spork/pds.py",
-        "docs/FREE_THREADING.md",
         "tools/benchmark_free_threading.py",
         "tools/smoke_installed_distribution.py",
         "tools/stress_free_threading.py",

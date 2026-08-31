@@ -54,8 +54,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/spork-it/spork-pds"
-Documentation = "https://github.com/spork-it/spork-pds#readme"
+Homepage = "https://spork.sh/docs/packages/spork-pds/"
+Documentation = "https://spork.sh/docs/packages/spork-pds/"
 Repository = "https://github.com/spork-it/spork-pds"
 Issues = "https://github.com/spork-it/spork-pds/issues"
 Changelog = "https://github.com/spork-it/spork-pds/blob/main/CHANGELOG.md"

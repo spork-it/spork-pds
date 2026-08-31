@@ -3,29 +3,15 @@
 [![Tests](https://github.com/spork-it/spork-pds/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/spork-it/spork-pds/actions/workflows/test.yml)
 ![PyPI - Version](https://img.shields.io/pypi/v/spork-pds)
 
-`spork-pds` provides fast, immutable persistent data structures for CPython. They use familiar collection operators, but return new values while sharing unchanged structure with the original. Snapshots stay inexpensive and previous values remain unchanged.
+`spork-pds` provides fast immutable persistent collections for CPython. Updates return new values while sharing unchanged structure; prior versions remain unchanged. The package is usable directly from Python and has no dependency on the Spork language or runtime.
 
-The package is the standalone home of the persistent data structures originally developed for [Spork](https://github.com/spork-it/spork-lang). It has no dependency on the Spork language or runtime.
-
-## Features
-
-- `Vector`: bit-partitioned persistent vector with indexing, slicing, `+` concatenation, and `*` repetition
-- `Map`: persistent hash map backed by a HAMT with dict-style `|` merging
-- `Set`: persistent hash set with `|`, `&`, `-`, and `^` operations
-- `SortedVector`: ordered persistent collection backed by a size-annotated red-black tree
-- `Cons`: immutable linked-list cells
-- `DoubleVector` and `IntVector`: specialized float64 and int64 vectors with the read-only buffer protocol
-- Transient variants for efficient batches of controlled mutation
-- Structural ABC integration, hashing, iteration, generic aliases, and pickle support
-- CPython 3.10+ support, including native free-threaded execution on CPython 3.14t
-
-## Installation
+## Install
 
 ```bash
 python -m pip install spork-pds
 ```
 
-A C compiler and Python development headers are required when installing from a source distribution. Published releases are intended to provide wheels for supported Python versions and platforms.
+Published releases provide wheels for supported CPython versions and platforms. Source builds require a C compiler and Python development headers.
 
 ## Quick start
 
@@ -33,131 +19,68 @@ A C compiler and Python development headers are required when installing from a 
 from spork.pds import Map, Set, Vector, sorted_vec
 
 numbers = Vector([1, 2, 3])
-extended = numbers + [4, 5]
-repeated = numbers * 2
-
-assert list(numbers) == [1, 2, 3]
-assert list(extended) == [1, 2, 3, 4, 5]
-assert list(repeated) == [1, 2, 3, 1, 2, 3]
+extended = numbers + [4]
 
 config = Map({"host": "localhost", "port": 8000})
 production = config | {"host": "example.com"}
 
-assert config["host"] == "localhost"
-assert production["host"] == "example.com"
-
 roles = Set(["reader", "writer"])
 admin_roles = roles | {"admin"}
 
-assert "admin" not in roles
-assert "admin" in admin_roles
+ordered = sorted_vec([3, 1, 2, 2])
 
-ordered = sorted_vec([5, 1, 3, 2, 4])
-assert list(ordered) == [1, 2, 3, 4, 5]
+assert list(numbers) == [1, 2, 3]
+assert list(extended) == [1, 2, 3, 4]
+assert config["host"] == "localhost"
+assert production["host"] == "example.com"
+assert "admin" not in roles and "admin" in admin_roles
+assert list(ordered) == [1, 2, 2, 3]
 ```
 
-### Native operators, persistent values
-
-Operators always produce persistent `spork.pds` collections and leave their operands unchanged:
+Use a transient when only the final result of a large update batch matters:
 
 ```python
-updated_map = config | {"port": 443}
-combined_set = roles | {"admin", "auditor"}
-reduced_set = combined_set - {"reader"}
-longer_vector = numbers + range(4, 7)
-```
-
-Augmented assignment follows Python's normal immutable-value behavior. It rebinds the name rather than mutating the collection:
-
-```python
-original = Map({"users": 100})
-updated = original
-updated |= {"users": 101}
-
-assert original["users"] == 100
-assert updated["users"] == 101
-```
-
-The named persistent operations—such as `.assoc()`, `.conj()`, and `.disj()`—remain available when an individual update is clearer.
-
-### Batch updates with transients
-
-Persistent updates are ideal when each intermediate version matters. For a batch where only the final value matters, use a transient:
-
-```python
-from spork.pds import EMPTY_VECTOR
-
-builder = EMPTY_VECTOR.transient()
+builder = Vector().transient()
 for value in range(100_000):
-    builder.conj_mut(value)
-
-values = builder.persistent()
-assert values[-1] == 99_999
+    builder.append(value)
+result = builder.persistent()
 ```
 
-Calling `persistent()` invalidates the transient. Further edits and element access raise `RuntimeError`; discard the transient immediately after conversion.
+Calling `.persistent()` invalidates the transient. Discard it immediately afterward.
 
-### Native free-threading
+## Collection families
 
-On free-threaded CPython 3.14t, importing `spork-pds` leaves the GIL disabled. Persistent values are immutable and may be shared between threads, and different transient builders may run in parallel.
+- `Vector`, `Map`, and `Set` provide general persistent collections.
+- `SortedVector` retains duplicates in configured order.
+- `DoubleVector` and `IntVector` store unboxed values and export read-only buffers.
+- `Cons` provides immutable linked-list cells.
+- Transient variants support controlled single-owner mutation batches.
 
-A transient is confined to the Python thread that created it. Cross-thread access to the same transient raises `RuntimeError`; convert it to a persistent value before sharing it. Stored Python objects remain responsible for their own thread safety, just as they are when stored in a tuple or dictionary. Isolated and per-interpreter-GIL subinterpreters remain unsupported. See [Native Free-Threading Support](docs/FREE_THREADING.md) for stress, sanitizer, performance, and wheel validation details.
-
-### Typed vectors and NumPy
-
-```python
-from spork.pds import vec_f64, vec_i64
-
-floats = vec_f64(1.0, 2.0, 3.0)
-integers = vec_i64(1, 2, 3)
-
-# The exported buffers are read-only.
-assert memoryview(floats).format == "d"
-assert memoryview(integers).format == "q"
-
-# NumPy can view the vectors through the buffer protocol.
-import numpy as np
-array = np.asarray(floats)
-```
-
-The first buffer request materializes and caches contiguous storage; subsequent views reuse that immutable cache.
+On free-threaded CPython 3.14t, persistent values may be shared across threads and independent transient builders may execute in parallel. Each transient is confined to its creating thread. Stored Python objects retain their own thread-safety requirements.
 
 ## Documentation
 
-- [Practical guide](docs/GUIDE.md)
-- [API reference](docs/API.md)
-- [Design and complexity](docs/DESIGN.md)
-- [Native free-threading support](docs/FREE_THREADING.md)
-- [Benchmark suite](docs/BENCHMARKS.md)
-- [Documentation index](docs/README.md)
+Canonical documentation is maintained on `spork.sh`:
+
+- [Package overview](https://spork.sh/docs/packages/spork-pds/)
+- [Practical guide](https://spork.sh/docs/packages/spork-pds/guide/)
+- [API reference](https://spork.sh/docs/packages/spork-pds/api/)
+- [Design and complexity](https://spork.sh/docs/packages/spork-pds/design/)
+- [Native free-threading](https://spork.sh/docs/packages/spork-pds/free-threading/)
+- [Benchmark methodology](https://spork.sh/docs/packages/spork-pds/benchmarks/)
 - [Changelog](CHANGELOG.md)
 
 ## Development
 
-Clone the repository and set up the development environment:
-
 ```bash
 git clone https://github.com/spork-it/spork-pds.git
 cd spork-pds
-
 make venv
 make test
 make fuzz
 ```
 
-Useful targets:
-
-```bash
-make build
-make build-debug
-make stress-free-threading STRESS_ARGS="--require-no-gil"
-make benchmark BENCH_ARGS="--size 100000 --iter 50"
-make benchmark-free-threading FT_BENCH_ARGS="--size 4096 --repeats 9"
-make dist
-make check-dist
-```
-
-See `make help` for the complete target list.
+Use `make help` for build, sanitizer, benchmark, and distribution targets.
 
 ## License
 

@@ -16,7 +16,6 @@ SDIST_REQUIRED_SUFFIXES = (
     "/src/module.c",
     "/src/pds_internal.h",
     "/spork/pds.py",
-    "/docs/FREE_THREADING.md",
     "/tools/benchmark_free_threading.py",
     "/tools/smoke_installed_distribution.py",
     "/tools/stress_free_threading.py",
