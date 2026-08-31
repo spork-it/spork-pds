@@ -4,6 +4,8 @@ All notable changes to `spork-pds` will be documented here.
 
 ## Unreleased
 
+## 0.1.4
+
 - Integrate object-bearing collections, internal nodes, transients, and iterators with Python's cyclic garbage collector.
 - Fix typed-vector node ownership across structurally shared versions.
 - Harden singleton, temporary-builder, iterator, allocation, and hash-overflow behavior.
