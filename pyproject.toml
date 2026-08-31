@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
-    {name = "Grant Wade", email = "grant@spork.sh"}
+    {name = "Grant Wade", email = "grant@wade.software"}
 ]
 keywords = [
     "persistent-data-structures",
